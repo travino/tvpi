@@ -1,0 +1,35 @@
+name: Refresh TVP M3U
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch:          # also allow manual trigger from the Actions tab
+
+permissions:
+  contents: write             # needed to commit tvp.m3u back to the repo
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate tvp.m3u
+        run: python generate.py
+
+      - name: Commit and push updated playlist
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tvp.m3u
+          # Only commit if the file actually changed
+          git diff --cached --quiet || git commit -m "chore: refresh TVP streams [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+          git push
