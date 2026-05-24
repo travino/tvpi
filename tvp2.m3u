@@ -1,2 +1,4 @@
 #EXTM3U
-# Playlist not yet generated — wait for the GitHub Action to run (≤10 min)
+
+#EXTINF:-1 tvg-id="399698" tvg-name="TVP 2 HD" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP 2 HD
+https://rsdt-krk202-7.tvp.pl/token/video/live/51696811/20260524/2272784066/G12jd44dBMAXUEt1bflCGY1YoF2J8kYxrbCZDTYlaSmg72k8w6M-rCmVBUtOCbvrrwH5jIidt9xu_Ww0sRjDlbUMLx775IQAaOToPLzhT5_bod45OQJq2_e_SHe1vzkPDVt3U5kmk1q1MFyUepxXlbnllTc0UafiwgGf64h3DnA/156/master.m3u8

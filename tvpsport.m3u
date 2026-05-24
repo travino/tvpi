@@ -1,2 +1,4 @@
 #EXTM3U
-# Playlist not yet generated — wait for the GitHub Action to run (≤10 min)
+
+#EXTINF:-1 tvg-id="399700" tvg-name="TVP Sport" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Sport
+https://rsdt-krk201-5.tvp.pl/token/video/live/51696822/20260524/2272784066/5Ape-FfL1eMinfD7Dk-5KUEScaDk0m0s3CaUdpKLs9yIW_a8jEYHdL8_PmYWU3e1S03Rnxk4RFVH8r8bB3j7LX8ULNCYKX9gcFs1-NOQ3V6XScsd93RF7J5Mt-JOctjB1aqRzC0nVyFZPlHAEMf4Zf2VS1OVtrfuUoa7rTkprqc/156/master.m3u8
