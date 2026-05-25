@@ -36,6 +36,6 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add tvp.m3u tvp1.m3u tvp2.m3u tvpinfo.m3u tvpkultura.m3u tvpsport.m3u tvpdokument.m3u
+          git add tvp.m3u tvp1.m3u tvp2.m3u tvpinfo.m3u tvpsport.m3u tvpkultura.m3u tvpdokument.m3u tvpnauka.m3u tvprozrywka.m3u tvphistoria.m3u
           git diff --cached --quiet || git commit -m "chore: refresh TVP streams [$(date -u '+%Y-%m-%d %H:%M UTC')]"
           git push
