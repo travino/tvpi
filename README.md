@@ -23,6 +23,19 @@ Replace `YOUR_USERNAME` and `YOUR_REPO` with your actual GitHub username and rep
 | tvp1hd | TVP 1 HD |
 | tvp2hd | TVP 2 HD |
 
+### ![tvp-vod](https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png)
+- [tvp](https://tvpi.travny.workers.dev/tvp.m3u)
+- [tvp1](https://tvpi.travny.workers.dev/tvp1.m3u)
+- [tvp2](https://tvpi.travny.workers.dev/tvp2.m3u)
+- [tvpinfo](https://tvpi.travny.workers.dev/tvpinfo.m3u)
+- [tvpsport](https://tvpi.travny.workers.dev/tvpsport.m3u)
+- [tvpdokument](https://tvpi.travny.workers.dev/tvpdokument.m3u)
+- [tvpkultura](https://tvpi.travny.workers.dev/tvpkultura.m3u)
+- [tvp.m3u](https://raw.githubusercontent.com/travino/tvpi/main/tvp.m3u)
+- [tvp1.m3u](https://raw.githubusercontent.com/travino/tvpi/main/tvp1.m3u)
+- [tvp2.m3u](https://raw.githubusercontent.com/travino/tvpi/main/tvp2.m3u)
+- [tvpsport.m3u](https://raw.githubusercontent.com/travino/tvpi/main/tvpsport.m3u)
+
 More channels (TVP Info, Kultura, Sport, Polonia, World…) can be enabled by uncommenting lines in `generate.py`.
 
 ## How it works
