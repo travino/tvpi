@@ -13,8 +13,14 @@
  *   /tvpnauka.m3u    → TVP Nauka
  *   /tvprozrywka.m3u → TVP Rozrywka
  *   /tvphistoria.m3u → TVP Historia
- */
 
+ * Caching strategy:
+ *   - scheduled() (every 30 min) pre-fetches all stream URLs from the TVP API
+ *     and stores each one in the Cloudflare Cache API under a stable internal
+ *     key: https://tvpi-cache/stream/<slug>  (TTL 1800 s)
+ *   - fetch() reads from cache first; falls back to a live TVP API call only
+ *     on a cold start or after a failed cron run.
+ */
 const CHANNELS = [
   {
     id:    "399697",
@@ -81,6 +87,12 @@ const CHANNELS = [
   },
 ];
 
+// Stable internal cache key prefix — not a real URL, just a unique namespace.
+const CACHE_KEY_PREFIX = "https://tvpi-cache/stream/";
+
+// How long cached stream URLs are considered fresh (matches cron interval).
+const CACHE_TTL = 1800; // seconds
+
 const API_URL =
   "https://vod.tvp.pl/api/products/{id}/videos/playlist?platform=BROWSER&videoType=LIVE";
 
@@ -91,7 +103,11 @@ const FETCH_HEADERS = {
   Accept: "application/json, */*",
 };
 
-async function getStreamUrl(channelId) {
+// ---------------------------------------------------------------------------
+// TVP API
+// ---------------------------------------------------------------------------
+
+async function fetchStreamUrlFromApi(channelId) {
   try {
     const res = await fetch(API_URL.replace("{id}", channelId), {
       headers: FETCH_HEADERS,
@@ -104,6 +120,75 @@ async function getStreamUrl(channelId) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cache helpers  (Cloudflare Cache API — keyed on Request URL strings)
+// ---------------------------------------------------------------------------
+
+async function readFromCache(slug) {
+  const cache = caches.default;
+  const cached = await cache.match(new Request(CACHE_KEY_PREFIX + slug));
+  if (!cached) return null;
+  const text = await cached.text();
+  return text || null;
+}
+
+async function writeToCache(slug, url) {
+  const cache = caches.default;
+  const response = new Response(url, {
+    headers: {
+      "Content-Type": "text/plain",
+      // Workers Cache API respects Cache-Control for TTL.
+      "Cache-Control": `public, max-age=${CACHE_TTL}`,
+    },
+  });
+  await cache.put(new Request(CACHE_KEY_PREFIX + slug), response);
+}
+
+// ---------------------------------------------------------------------------
+// Resolve a stream URL: cache → live fallback
+// ---------------------------------------------------------------------------
+
+async function getStreamUrl(ch) {
+  // 1. Try cache first.
+  const cached = await readFromCache(ch.slug);
+  if (cached) return { url: cached, fromCache: true };
+
+  // 2. Cache miss — hit the TVP API directly.
+  const url = await fetchStreamUrlFromApi(ch.id);
+  if (url) {
+    // Opportunistically populate the cache so the next request is fast.
+    await writeToCache(ch.slug, url);
+  }
+  return { url, fromCache: false };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-cache all channels (called by the cron trigger)
+// ---------------------------------------------------------------------------
+
+async function refreshAllStreams() {
+  const results = await Promise.all(
+    CHANNELS.map(async (ch) => {
+      const url = await fetchStreamUrlFromApi(ch.id);
+      if (url) {
+        await writeToCache(ch.slug, url);
+        console.log(`[cron] cached ${ch.slug}: ${url.slice(0, 60)}…`);
+        return true;
+      } else {
+        console.warn(`[cron] failed to fetch ${ch.slug} (id=${ch.id})`);
+        return false;
+      }
+    })
+  );
+
+  const ok = results.filter(Boolean).length;
+  console.log(`[cron] refreshed ${ok}/${CHANNELS.length} streams`);
+}
+
+// ---------------------------------------------------------------------------
+// M3U builder
+// ---------------------------------------------------------------------------
+
 function buildM3U(entries) {
   const lines = ["#EXTM3U"];
   for (const { ch, url } of entries) {
@@ -115,11 +200,16 @@ function buildM3U(entries) {
   return lines.join("\n") + "\n";
 }
 
+// ---------------------------------------------------------------------------
+// Worker entry point
+// ---------------------------------------------------------------------------
+
 export default {
+  // HTTP handler
   async fetch(request) {
     const path = new URL(request.url).pathname.replace(/\/$/, "") || "/";
 
-    // Determine which channels to serve
+    // Determine which channels to serve.
     let targets;
     if (path === "/" || path === "/tvp.m3u") {
       targets = CHANNELS;
@@ -137,9 +227,12 @@ export default {
       targets = [ch];
     }
 
-    // Fetch all stream URLs in parallel
+    // Resolve URLs (cache-first, live fallback) in parallel.
     const results = await Promise.all(
-      targets.map(async (ch) => ({ ch, url: await getStreamUrl(ch.id) }))
+      targets.map(async (ch) => {
+        const { url, fromCache } = await getStreamUrl(ch);
+        return { ch, url, fromCache };
+      })
     );
 
     const valid = results.filter((r) => r.url !== null);
@@ -150,15 +243,23 @@ export default {
       });
     }
 
+    // Report cache hit/miss in a header for easy debugging.
+    const hitSlugs  = valid.filter((r) =>  r.fromCache).map((r) => r.ch.slug);
+    const missSlugs = valid.filter((r) => !r.fromCache).map((r) => r.ch.slug);
+
     return new Response(buildM3U(valid), {
       headers: {
         "Content-Type": "application/x-mpegurl",
         "Cache-Control": "no-store",
         "Access-Control-Allow-Origin": "*",
+        "X-Cache-Hit":  hitSlugs.join(",")  || "none",
+        "X-Cache-Miss": missSlugs.join(",") || "none",
       },
     });
   },
+
+  // Cron handler — runs every 30 minutes, pre-warms the cache.
   async scheduled(controller, env, ctx) {
-    console.log("cron processed");
+    ctx.waitUntil(refreshAllStreams());
   },
 };
