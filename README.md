@@ -1,6 +1,6 @@
 # TVP Live IPTV — GitHub-hosted M3U
 
-Auto-refreshed TVP live stream playlist, updated every **10 minutes** by GitHub Actions.  
+Auto-refreshed TVP live stream playlist, updated every **30 minutes** by GitHub Actions.  
 No server required — just point your IPTV player at the raw file URL.
 
 ## Player URL
@@ -27,7 +27,7 @@ More channels (TVP Info, Kultura, Sport, Polonia, World…) can be enabled by un
 
 ## How it works
 
-1. **GitHub Actions** runs `generate.py` every 10 minutes (cron schedule).
+1. **GitHub Actions** runs `generate.py` every 30 minutes (cron schedule).
 2. The script calls the TVP Stream API to fetch fresh, signed HLS token URLs.
 3. It writes `tvp.m3u` and commits it back to this repo.
 4. Your IPTV player fetches the raw file and always gets valid stream URLs.
@@ -52,7 +52,7 @@ GitHub Actions (every 10 min)
 
 1. Fork or push this repo to your GitHub account.
 2. Actions run automatically — no secrets or extra config needed.
-3. After the first run (up to 10 min), grab the raw URL and add it to your player.
+3. After the first run (up to 30 min), grab the raw URL and add it to your player.
 
 ## Tested players
 
@@ -64,7 +64,7 @@ GitHub Actions (every 10 min)
 
 ## Notes
 
-- Token TTL from TVP is ~15–30 minutes; refreshing every 10 min keeps them valid.
+- Token TTL from TVP is ~15–30 minutes; refreshing every 30 min keeps them valid.
 - GitHub Actions scheduled workflows can be delayed by a few minutes during high load.
 - GitHub's raw file CDN caches for up to 5 minutes — this is fine for our use case.
 - If the Action fails (TVP API down), the previous `tvp.m3u` stays in place unchanged.
