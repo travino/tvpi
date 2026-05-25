@@ -2,7 +2,7 @@ name: Refresh TVP M3U
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
