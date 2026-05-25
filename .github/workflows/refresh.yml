@@ -23,6 +23,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/refresh.yml/enable"
 
       - name: Checkout repo
+        uses: actions/checkout@v6.0.2
         run: |
           git clone "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" .
 
