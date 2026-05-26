@@ -6,7 +6,7 @@ Writes files to the streams/ directory:
   streams/tvp1.m3u, streams/tvp2.m3u, streams/tvpinfo.m3u,
   streams/tvpkultura.m3u, streams/tvpdokument.m3u, streams/tvpsport.m3u,
   streams/tvpnauka.m3u, streams/tvprozrywka.m3u, streams/tvphistoria.m3u,
-  streams/wpolsce24.m3u
+  streams/wpolsce24.m3u, streams/republika.m3u
 """
 
 import json
@@ -89,6 +89,10 @@ TVP_CHANNELS = [
 
 # ---------------------------------------------------------------------------
 # YouTube-sourced channels — fetched via yt-dlp
+#
+# Use the channel's persistent /live URL (not a fixed video ID): yt-dlp
+# resolves it to whatever broadcast is currently live, so a stream restart
+# on YouTube's side never breaks the playlist.
 # ---------------------------------------------------------------------------
 
 YOUTUBE_CHANNELS = [
@@ -97,7 +101,14 @@ YOUTUBE_CHANNELS = [
         "name":    "wPolsce24",
         "logo":    "https://wpolsce24.tv/favicon.ico",
         "group":   "Polska",
-        "yt_url":  "https://www.youtube.com/watch?v=CINoVvpEAyk",
+        "yt_url":  "https://www.youtube.com/@TelewizjawPolsce24/live",
+    },
+    {
+        "slug":    "republika",
+        "name":    "Telewizja Republika",
+        "logo":    "https://tvrepublika.pl/favicon.ico",
+        "group":   "Polska",
+        "yt_url":  "https://www.youtube.com/@Telewizja_Republika/live",
     },
 ]
 
