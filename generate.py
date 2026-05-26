@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
 TVP + wPolsce24 M3U generator — runs in GitHub Actions
-Writes one combined tvp.m3u AND one file per channel:
-  tvp1.m3u, tvp2.m3u, tvpinfo.m3u, tvpkultura.m3u, tvpdokument.m3u, tvpsport.m3u,
-  tvpnauka.m3u, tvprozrywka.m3u, tvphistoria.m3u, wpolsce24.m3u
+Writes files to the streams/ directory:
+  streams/playlist.m3u  ← combined (all channels)
+  streams/tvp1.m3u, streams/tvp2.m3u, streams/tvpinfo.m3u,
+  streams/tvpkultura.m3u, streams/tvpdokument.m3u, streams/tvpsport.m3u,
+  streams/tvpnauka.m3u, streams/tvprozrywka.m3u, streams/tvphistoria.m3u,
+  streams/wpolsce24.m3u
 """
 
 import json
+import os
 import subprocess
 import sys
 import urllib.request
+
+STREAMS_DIR = "streams"
 
 # ---------------------------------------------------------------------------
 # TVP channels — fetched from the TVP API
@@ -200,6 +206,7 @@ def write_placeholder(filename, channel_name):
 # ---------------------------------------------------------------------------
 
 def main():
+    os.makedirs(STREAMS_DIR, exist_ok=True)
     all_ok_entries = []
 
     # --- TVP channels ---
@@ -210,10 +217,10 @@ def main():
         if url:
             print(f"  ✓ {url[:80]}…", file=sys.stderr)
             all_ok_entries.append((ch, url))
-            write_m3u(f"{ch['slug']}.m3u", [(ch, url)])
+            write_m3u(f"{STREAMS_DIR}/{ch['slug']}.m3u", [(ch, url)])
         else:
             print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
-            write_placeholder(f"{ch['slug']}.m3u", ch["name"])
+            write_placeholder(f"{STREAMS_DIR}/{ch['slug']}.m3u", ch["name"])
 
     # --- YouTube-sourced channels ---
     for ch in YOUTUBE_CHANNELS:
@@ -223,13 +230,13 @@ def main():
         if url:
             print(f"  ✓ {url[:80]}…", file=sys.stderr)
             all_ok_entries.append((ch, url))
-            write_m3u(f"{ch['slug']}.m3u", [(ch, url)])
+            write_m3u(f"{STREAMS_DIR}/{ch['slug']}.m3u", [(ch, url)])
         else:
             print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
-            write_placeholder(f"{ch['slug']}.m3u", ch["name"])
+            write_placeholder(f"{STREAMS_DIR}/{ch['slug']}.m3u", ch["name"])
 
     # Combined playlist
-    write_m3u("tvp.m3u", all_ok_entries)
+    write_m3u(f"{STREAMS_DIR}/playlist.m3u", all_ok_entries)
 
     tvp_ok  = sum(1 for ch, _ in all_ok_entries if ch in TVP_CHANNELS)
     yt_ok   = sum(1 for ch, _ in all_ok_entries if ch in YOUTUBE_CHANNELS)
