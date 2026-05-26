@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-TVP M3U generator — runs in GitHub Actions
+TVP + wPolsce24 M3U generator — runs in GitHub Actions
 Writes one combined tvp.m3u AND one file per channel:
   tvp1.m3u, tvp2.m3u, tvpinfo.m3u, tvpkultura.m3u, tvpdokument.m3u, tvpsport.m3u,
-  tvpnauka.m3u, tvprozrywka.m3u, tvphistoria.m3u
+  tvpnauka.m3u, tvprozrywka.m3u, tvphistoria.m3u, wpolsce24.m3u
 """
 
 import json
+import subprocess
 import sys
 import urllib.request
 
-CHANNELS = [
+# ---------------------------------------------------------------------------
+# TVP channels — fetched from the TVP API
+# ---------------------------------------------------------------------------
+
+TVP_CHANNELS = [
     {
         "id":    "399697",
         "slug":  "tvp1",
@@ -76,7 +81,25 @@ CHANNELS = [
     },
 ]
 
-API_URL = (
+# ---------------------------------------------------------------------------
+# YouTube-sourced channels — fetched via yt-dlp
+# ---------------------------------------------------------------------------
+
+YOUTUBE_CHANNELS = [
+    {
+        "slug":    "wpolsce24",
+        "name":    "wPolsce24",
+        "logo":    "https://wpolsce24.tv/favicon.ico",
+        "group":   "Polska",
+        "yt_url":  "https://www.youtube.com/watch?v=CINoVvpEAyk",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# TVP API
+# ---------------------------------------------------------------------------
+
+TVP_API_URL = (
     "https://vod.tvp.pl/api/products/{id}/videos/playlist"
     "?platform=BROWSER&videoType=LIVE"
 )
@@ -92,8 +115,8 @@ HEADERS = {
 }
 
 
-def get_stream_url(channel_id):
-    url = API_URL.format(id=channel_id)
+def get_tvp_stream_url(channel_id):
+    url = TVP_API_URL.format(id=channel_id)
     try:
         req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -106,9 +129,52 @@ def get_stream_url(channel_id):
     return None
 
 
+# ---------------------------------------------------------------------------
+# yt-dlp helper — extracts the best HLS URL from a YouTube live stream
+# ---------------------------------------------------------------------------
+
+def get_youtube_stream_url(yt_url):
+    """
+    Calls yt-dlp to extract the best HLS manifest URL for a live stream.
+    Returns the URL string on success, None on failure.
+
+    yt-dlp must be installed:  pip install yt-dlp
+    """
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "--get-url",
+                "-f", "best[protocol=m3u8_native]/best[ext=m3u8]/best",
+                "--no-playlist",
+                yt_url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        url = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+        if result.returncode != 0 or not url:
+            print(f"  [!] yt-dlp error: {result.stderr.strip()[:200]}", file=sys.stderr)
+            return None
+        return url
+    except FileNotFoundError:
+        print("  [!] yt-dlp not found — install with: pip install yt-dlp", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  [!] yt-dlp exception: {e}", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# M3U helpers
+# ---------------------------------------------------------------------------
+
 def extinf(ch):
+    # Use tvg-id if present (TVP channels), otherwise use slug
+    tvg_id = ch.get("id", ch["slug"])
     return (
-        f'#EXTINF:-1 tvg-id="{ch["id"]}" '
+        f'#EXTINF:-1 tvg-id="{tvg_id}" '
         f'tvg-name="{ch["name"]}" '
         f'tvg-logo="{ch["logo"]}" '
         f'group-title="{ch["group"]}",{ch["name"]}'
@@ -124,26 +190,56 @@ def write_m3u(filename, entries):
     print(f"  → {filename}", file=sys.stderr)
 
 
-def main():
-    ok_entries = []
+def write_placeholder(filename, channel_name):
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"#EXTM3U\n# {channel_name} stream unavailable — will retry next run\n")
 
-    for ch in CHANNELS:
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    all_ok_entries = []
+
+    # --- TVP channels ---
+    for ch in TVP_CHANNELS:
         print(f"Fetching {ch['name']} (id={ch['id']}) …", file=sys.stderr)
-        url = get_stream_url(ch["id"])
+        url = get_tvp_stream_url(ch["id"])
 
         if url:
             print(f"  ✓ {url[:80]}…", file=sys.stderr)
-            ok_entries.append((ch, url))
+            all_ok_entries.append((ch, url))
             write_m3u(f"{ch['slug']}.m3u", [(ch, url)])
         else:
             print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
-            with open(f"{ch['slug']}.m3u", "w", encoding="utf-8") as f:
-                f.write(f"#EXTM3U\n# {ch['name']} stream unavailable — will retry next run\n")
+            write_placeholder(f"{ch['slug']}.m3u", ch["name"])
 
-    write_m3u("tvp.m3u", ok_entries)
+    # --- YouTube-sourced channels ---
+    for ch in YOUTUBE_CHANNELS:
+        print(f"Fetching {ch['name']} via yt-dlp ({ch['yt_url']}) …", file=sys.stderr)
+        url = get_youtube_stream_url(ch["yt_url"])
 
-    print(f"\nDone: {len(ok_entries)}/{len(CHANNELS)} streams fetched.", file=sys.stderr)
-    if len(ok_entries) == 0:
+        if url:
+            print(f"  ✓ {url[:80]}…", file=sys.stderr)
+            all_ok_entries.append((ch, url))
+            write_m3u(f"{ch['slug']}.m3u", [(ch, url)])
+        else:
+            print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
+            write_placeholder(f"{ch['slug']}.m3u", ch["name"])
+
+    # Combined playlist
+    write_m3u("tvp.m3u", all_ok_entries)
+
+    tvp_ok  = sum(1 for ch, _ in all_ok_entries if ch in TVP_CHANNELS)
+    yt_ok   = sum(1 for ch, _ in all_ok_entries if ch in YOUTUBE_CHANNELS)
+    total   = len(TVP_CHANNELS) + len(YOUTUBE_CHANNELS)
+    print(
+        f"\nDone: {tvp_ok}/{len(TVP_CHANNELS)} TVP + {yt_ok}/{len(YOUTUBE_CHANNELS)} YT "
+        f"= {len(all_ok_entries)}/{total} streams fetched.",
+        file=sys.stderr,
+    )
+    if len(all_ok_entries) == 0:
         sys.exit(1)
 
 
