@@ -7,6 +7,10 @@ Writes files to the streams/ directory:
   streams/tvpkultura.m3u, streams/tvpdokument.m3u, streams/tvpsport.m3u,
   streams/tvpnauka.m3u, streams/tvprozrywka.m3u, streams/tvphistoria.m3u,
   streams/wpolsce24.m3u, streams/republika.m3u
+
+A transient fetch failure no longer wipes a channel: the previous
+last-known-good URL is reused so the channel stays up until either a
+fresh URL is fetched or there is genuinely nothing to fall back on.
 """
 
 import json
@@ -112,65 +116,6 @@ YOUTUBE_CHANNELS = [
     },
 ]
 
-# Optional Netscape-format cookies file. When present (written from the
-# YT_COOKIES secret in CI), it's handed to yt-dlp to get past YouTube's
-# bot-wall on datacenter IPs. Absent locally → yt-dlp runs without it.
-import time  # add near the top with the other imports
-
-YT_COOKIES_FILE = "cookies.txt"
-
-# Retry tuning for transient YouTube failures (esp. HTTP 429 on shared
-# runner IPs). Backoff is longer for rate-limits than for generic errors.
-YT_MAX_ATTEMPTS = 2
-YT_BACKOFF_BASE = 5      # seconds; generic errors → 5s, 10s, 15s
-YT_BACKOFF_429  = 20     # seconds; rate-limits → 20s, 40s, 60s
-
-
-def get_youtube_stream_url(yt_url):
-    cmd = [
-        "yt-dlp",
-        "--get-url",
-        "-f", "best[protocol=m3u8_native]/best[ext=m3u8]/best",
-        "--no-playlist",
-    ]
-    if os.path.exists(YT_COOKIES_FILE):
-        cmd += ["--cookies", YT_COOKIES_FILE]
-    cmd.append(yt_url)
-
-    last_err = ""
-    for attempt in range(1, YT_MAX_ATTEMPTS + 1):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            url = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
-
-            if result.returncode == 0 and url:
-                return url
-
-            last_err = result.stderr.strip()
-        except FileNotFoundError:
-            print("  [!] yt-dlp not found — install with: pip install yt-dlp", file=sys.stderr)
-            return None  # not transient; don't retry
-        except subprocess.TimeoutExpired:
-            last_err = "timed out after 60s"
-        except Exception as e:
-            last_err = str(e)
-
-        # Decide whether another attempt is worthwhile.
-        if attempt < YT_MAX_ATTEMPTS:
-            is_429 = "429" in last_err or "Too Many Requests" in last_err
-            sleep_s = (YT_BACKOFF_429 if is_429 else YT_BACKOFF_BASE) * attempt
-            label = "rate-limited (429)" if is_429 else "error"
-            print(
-                f"  [!] yt-dlp {label}, attempt {attempt}/{YT_MAX_ATTEMPTS}; "
-                f"retrying in {sleep_s}s: {last_err[:150]}",
-                file=sys.stderr,
-            )
-            time.sleep(sleep_s)
-
-    print(f"  [!] yt-dlp gave up after {YT_MAX_ATTEMPTS} attempts: {last_err[:200]}", file=sys.stderr)
-    return None
-
-
 # ---------------------------------------------------------------------------
 # TVP API
 # ---------------------------------------------------------------------------
@@ -271,6 +216,37 @@ def write_placeholder(filename, channel_name):
         f.write(f"#EXTM3U\n# {channel_name} stream unavailable — will retry next run\n")
 
 
+def read_existing_url(filename):
+    """
+    Return the last-known-good stream URL already written for this channel,
+    or None if the file is missing / only contains a placeholder.
+
+    This lets a transient API/yt-dlp failure fall back to the previous URL
+    instead of clobbering a still-valid playlist with a placeholder.
+    """
+    try:
+        with open(filename, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("http"):
+                    return line
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def resolve_url(ch, fresh_url, filename):
+    """
+    Pick the best available URL for a channel:
+      1. a freshly fetched URL, if we got one;
+      2. otherwise the last-known-good URL on disk.
+    Returns (url_or_None, is_fresh).
+    """
+    if fresh_url:
+        return fresh_url, True
+    return read_existing_url(filename), False
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -278,32 +254,48 @@ def write_placeholder(filename, channel_name):
 def main():
     os.makedirs(STREAMS_DIR, exist_ok=True)
     all_ok_entries = []
+    reused = 0
 
     # --- TVP channels ---
     for ch in TVP_CHANNELS:
+        filename = f"{STREAMS_DIR}/{ch['slug']}.m3u"
         print(f"Fetching {ch['name']} (id={ch['id']}) …", file=sys.stderr)
-        url = get_tvp_stream_url(ch["id"])
 
-        if url:
+        fresh = get_tvp_stream_url(ch["id"])
+        url, is_fresh = resolve_url(ch, fresh, filename)
+
+        if url and is_fresh:
             print(f"  ✓ {url[:80]}…", file=sys.stderr)
             all_ok_entries.append((ch, url))
-            write_m3u(f"{STREAMS_DIR}/{ch['slug']}.m3u", [(ch, url)])
+            write_m3u(filename, [(ch, url)])
+        elif url:
+            print(f"  ~ fetch failed — reusing last-known-good URL", file=sys.stderr)
+            all_ok_entries.append((ch, url))
+            reused += 1
+            # Leave the existing file untouched (it already holds this URL).
         else:
-            print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
-            write_placeholder(f"{STREAMS_DIR}/{ch['slug']}.m3u", ch["name"])
+            print(f"  ✗ no fresh or cached URL — writing placeholder", file=sys.stderr)
+            write_placeholder(filename, ch["name"])
 
     # --- YouTube-sourced channels ---
     for ch in YOUTUBE_CHANNELS:
+        filename = f"{STREAMS_DIR}/{ch['slug']}.m3u"
         print(f"Fetching {ch['name']} via yt-dlp ({ch['yt_url']}) …", file=sys.stderr)
-        url = get_youtube_stream_url(ch["yt_url"])
 
-        if url:
+        fresh = get_youtube_stream_url(ch["yt_url"])
+        url, is_fresh = resolve_url(ch, fresh, filename)
+
+        if url and is_fresh:
             print(f"  ✓ {url[:80]}…", file=sys.stderr)
             all_ok_entries.append((ch, url))
-            write_m3u(f"{STREAMS_DIR}/{ch['slug']}.m3u", [(ch, url)])
+            write_m3u(filename, [(ch, url)])
+        elif url:
+            print(f"  ~ fetch failed — reusing last-known-good URL", file=sys.stderr)
+            all_ok_entries.append((ch, url))
+            reused += 1
         else:
-            print(f"  ✗ skipped — writing placeholder", file=sys.stderr)
-            write_placeholder(f"{STREAMS_DIR}/{ch['slug']}.m3u", ch["name"])
+            print(f"  ✗ no fresh or cached URL — writing placeholder", file=sys.stderr)
+            write_placeholder(filename, ch["name"])
 
     # Combined playlist
     write_m3u(f"{STREAMS_DIR}/playlist.m3u", all_ok_entries)
@@ -313,7 +305,8 @@ def main():
     total   = len(TVP_CHANNELS) + len(YOUTUBE_CHANNELS)
     print(
         f"\nDone: {tvp_ok}/{len(TVP_CHANNELS)} TVP + {yt_ok}/{len(YOUTUBE_CHANNELS)} YT "
-        f"= {len(all_ok_entries)}/{total} streams fetched.",
+        f"= {len(all_ok_entries)}/{total} streams available "
+        f"({reused} reused from last-known-good).",
         file=sys.stderr,
     )
     if len(all_ok_entries) == 0:
