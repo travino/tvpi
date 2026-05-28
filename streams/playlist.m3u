@@ -1,28 +1,28 @@
 #EXTM3U
 
 #EXTINF:-1 tvg-id="399697" tvg-name="TVP 1 HD" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP 1 HD
-https://rsdt-krk201-5.tvp.pl/token/video/live/51689486/20260528/339330787/4Zn0A_MNUMGw2BR32q_fzTB_TxiDBC4YDJaPRS5k2U_R2Xh6aAadd6BH4BefWuKWgilHbB_P-gKzBkGBEi55LtG3zxb8fTQIFgrG2RL_vt-W4ztsJzBThB_zs1_StOeAbyDcR2wdgaFVMtKoM9jhFdUNORgti0Zt-FvFuFosEM0/156/master.m3u8
+https://rr-merk3.cdn.tvp.pl/token/video/live/51689486/20260528/346632745/yHpv4peFjcWlvqOW7F_jxHJcLSLE-0AADEzDNgrOqhFQewegwWpunFNerjrA5k17rK01XV5uY3R2Mq7dPm5VW74c7IQOmB8UKhbeERQcKa87Xg6YpV_ZvqudhQTLzHNdR_On_yefS48PX0jFL5aYZiAaZ-scse2-dp5XMVeU9WQ/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399698" tvg-name="TVP 2 HD" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP 2 HD
-https://rr-merk3.cdn.tvp.pl/token/video/live/51696811/20260528/339330787/W_JBKobL0-C8kG-23XQQIMlbW5aNaEn6DB6-ezlASCOkh6kGifNaMKjGzIq84GRIMHXrTzFU-qnr2L2otI1up_haahQ4DzyPzRVrINE5umxkxl0tZV_fqNwIrdPC-no-NfRQSyM_Qz5aKgfLph-qo8mArp_8USzkrInGivrLEmQ/156/master.m3u8
+https://rr-merk3.cdn.tvp.pl/token/video/live/51696811/20260528/346632745/MyxDhnK3Gl6yMo-ZuT2IoD0cQ-oY2G12rLkXDxYrtgU7zJ7VFuusb9xjkcN9JZBbZjXRFRqBb9UN5mltnlf1Qb-k0uv6aKSjcxJhsSFCmlVxBfvUh-d_GiHO0nV7qzulnHY1D9YoIDEOxqKhJCuLv4vPkvhtkvWGDkdGeV29X6s/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399699" tvg-name="TVP Info" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Info
-https://rr-merk3.cdn.tvp.pl/token/video/live/51696820/20260528/339330787/T5LHhE9yZzE6YMI_Alc49OoF-FDuI1coerjABY09WQqcDJXohaDe5LtaeHiaPN0UNEFMAq3XCG4GQ0Q6rk0IIv332dIYutd7qKJn9-hD2e_nmIv_2XhWGKfAJDjQeRFVdUDPS8lXd1vhvwS0QF5PQqSsYkSwUhOaoJ2trPXaADM/156/master.m3u8
+https://rsdt-krk203-9.tvp.pl/token/video/live/51696820/20260528/346632745/qXAguS5YFpFWPCKKPBEGsG9GWkzTnEkXu-Vi1lksE63gcpsc5TQ9nOQbwQ8LpZ1RxuDWUvB5QSgy44WK28vwvUEfqLJCoAqjsf6hvFUp3PNaT8ODkj9z_S8VSPBcU9HRO7Nl_O9YIJk1bv1lvJXBhmP7QK5WJ4SzXnsbyZ8uU94/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399700" tvg-name="TVP Kultura" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Kultura
-https://rsdt-krk201-5.tvp.pl/token/video/live/51696822/20260528/339330787/W8iLGN5N4xSMczchUd6IoJeIC_zPnM5A-DyyUZk1zQWqjL_pj_VI-f2vL1MSgTyyt6axtkAsjbltGJrOi9jSK0VwfkbeMBB3ZL7P_mWVbYK9wM1EbU998lINJgyo3ppb62kLxVjSe_-OlDEz-HBVECMKexQeLB-oZJ6i3T28oqo/156/master.m3u8
+https://rr-merk3.cdn.tvp.pl/token/video/live/51696822/20260528/346632745/uSQ9gy3iCb1mrf3m1D6kiVXmWjJbIZaGnwOe50DLOzYB0emDhzFHZ9KNiADehMXfLv2RRFyc8pgvfoaTsNnod3YbsFdaexfoxLEW9Z1IhZbzelp24EpucaLaT4wZod2TVi9ToxIfmYtOo8zaONSne870zZ9LhEZlZcpz4A9SktU/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399702" tvg-name="TVP Sport" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Sport
-https://rsdt-krk202-7.tvp.pl/token/video/live/51696827/20260528/339330787/kb3HyAzH9_Fu3pgjk0ufPbAEHR3Ini-QwfjtcGFWR0MdJQ03OEhU_Vc4AUstsbfdkCA6hyxdf3YFY9W0dUapHuoQV6gus5kQGURUQGfveyLpqeKyHOpA1eg5YmD59XLnDUL6xCc_fM-I0GRo_EYZL4Wy9yWhH8872Qj6aE95vV8/156/master.m3u8
+https://rr-merk3.cdn.tvp.pl/token/video/live/51696827/20260528/346632745/0gLriBazPCqUk1Aw173O3e86gazUdISRS4SLccos1XAr1Ouf6wycm9Yn1J8BMTdctlYcPgkWpHGbUi01pZ15nO5CHanvKlYSrFCnaVASXvKXtnWXpt6PhONYNjZtiRc6XGOBolTEMqhokqif7NA0AvSRHkoWlQJz4pEfeoXER5M/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399721" tvg-name="TVP Dokument" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Dokument
-https://rr-merk3.cdn.tvp.pl/token/video/live/53795159/20260528/339330787/OyJcymweZeST6k0NfH8tRqtrKyviVgy4rFUO3OoPbYiR--WiwyLebh9WnimpoH7S-V-zyxwcH_F4iPJIFnr_svIIEJBddsvys8fbUHPj7w2nZTavhXyE8BqMm2iE0951mqVwapIww61VUpWigeIUWQ9SLjreD9bIV4KoNxoDmSA/156/master.m3u8
+https://rsdt-krk203-9.tvp.pl/token/video/live/53795159/20260528/346632745/8eZV7rTbT5gSvVFEbdnffft_OK9LNtcOFqddtEz2xNYgEOWSiiQMfGWRWO0tJ25FTFZNt37v-5dcYWQMgtjjbb-i36-EelMcwSj1vPfa14JXasEYHUbvR9LI04o4t-zqkts9E_0iWZgtGFAOmRk4a_CcE5nge5llH_lDRE0sSs0/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399722" tvg-name="TVP Nauka" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Nauka
-https://rsdt-krk203-9.tvp.pl/token/video/live/71345993/20260528/339330787/BT7ZZi2uk7SAth_e8clEY_1SsDyOkj-xncFTFpkiCmdqriK2jHZzPiA05iNNJWDoYIRkMvI6wry2Ii98x1XU0Psb-AkE7EuIubVKQnrRKrrW2EaokeodoGzBzrfYbC5Yn5gb1b65KAib3iFNtRYhUKP6gVgiH8ijLJ4YQxMK1RY/156/master.m3u8
+https://rsdt-krk202-7.tvp.pl/token/video/live/71345993/20260528/346632745/z5TcB51BvNsyoD1nnssERwcY0Rm4D0ZMqCdzaY523-hDVEXLMix3KNWSkFUub2Onss0-khHqr0PYyX6ZTvxm1W4YK2-zikoUyPmYkDcq4u0V1NTSvBLgFoUjcaP1uBYuisjLDKikxmrrkTmL4FF4jVBDjQyxID8cPdx2lB2eBq0/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399724" tvg-name="TVP Rozrywka" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Rozrywka
-https://rr-merk3.cdn.tvp.pl/token/video/live/51696825/20260528/339330787/4Z2pydDh0s5JwV85fueeKvefz4joreh3ghWn_r72OyRbBpbO6gHheAaL2P-kyq8Q0U7zesWq2Qd2NYgftDQGRZeQPJ-7CeCuHdrvtRcy0sT9mn9WO74Q7PEH5E5oGJr5H-2WRx8zv_U3Coffp6GsEIaCQ4Q0Ye5eAiFnS3A_ULY/156/master.m3u8
+https://rsdt-krk201-5.tvp.pl/token/video/live/51696825/20260528/346632745/dmxlXM-McerdEmkPJIY2XxE7YwzOuod0QzCS0pLKOtwWdSPyx1Z109oDpcS6JuC21MkOQ4u-XztR5ItEpC0Bnwbc3oZ38UBDbH1SmtBBHxA0ZV9YlNWh9XJg9BrNh4nd1pOO5BqzgBUZ2zu8biEQpBXyG3RbWbBHXxjyMOCWw4g/156/master.m3u8
 
 #EXTINF:-1 tvg-id="399703" tvg-name="TVP Historia" tvg-logo="https://s.tvp.pl/files/tvp.pl/images/vod-logo-header.png" group-title="Polska",TVP Historia
-https://rsdt-krk203-9.tvp.pl/token/video/live/51696819/20260528/339330787/QogOy_7K-qX7GOSBGlk-g4836OfHaJx2gIXYDdUjl48YXMjK3o_tpR6m3PDAwfjlnu65j2c8OIcPLE4ufEzY66Fn6CjO6wVIdr4ALlFv0oB7unhA0XWxkKkLnpEDFs83k2b3eO9wf6VfFwjMHZKR4yYyeRasvnUkFQ6PhzjXDlc/156/master.m3u8
+https://rsdt-krk201-5.tvp.pl/token/video/live/51696819/20260528/346632745/KO5MVdcnCejC8Kth-Lcz5qoQw5udsj3aEgDLgfI8WvBJoyQ_bulIsNzfog51NbDy6xnY1SklPIl9Bc-_TWIqqtsIlzdGHBOtlU4o3cOzbZP0bmo0tRAn1dnveoXcPDK_J_kzuGKYI4UraSrNwaEQFtnZR8eWJQ_uIvJcJaYVNOE/156/master.m3u8
