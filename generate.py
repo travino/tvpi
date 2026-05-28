@@ -115,7 +115,15 @@ YOUTUBE_CHANNELS = [
 # Optional Netscape-format cookies file. When present (written from the
 # YT_COOKIES secret in CI), it's handed to yt-dlp to get past YouTube's
 # bot-wall on datacenter IPs. Absent locally → yt-dlp runs without it.
+import time  # add near the top with the other imports
+
 YT_COOKIES_FILE = "cookies.txt"
+
+# Retry tuning for transient YouTube failures (esp. HTTP 429 on shared
+# runner IPs). Backoff is longer for rate-limits than for generic errors.
+YT_MAX_ATTEMPTS = 3
+YT_BACKOFF_BASE = 5      # seconds; generic errors → 5s, 10s, 15s
+YT_BACKOFF_429  = 20     # seconds; rate-limits → 20s, 40s, 60s
 
 
 def get_youtube_stream_url(yt_url):
@@ -129,19 +137,38 @@ def get_youtube_stream_url(yt_url):
         cmd += ["--cookies", YT_COOKIES_FILE]
     cmd.append(yt_url)
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        url = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
-        if result.returncode != 0 or not url:
-            print(f"  [!] yt-dlp error: {result.stderr.strip()[:200]}", file=sys.stderr)
-            return None
-        return url
-    except FileNotFoundError:
-        print("  [!] yt-dlp not found — install with: pip install yt-dlp", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  [!] yt-dlp exception: {e}", file=sys.stderr)
-        return None
+    last_err = ""
+    for attempt in range(1, YT_MAX_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            url = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+
+            if result.returncode == 0 and url:
+                return url
+
+            last_err = result.stderr.strip()
+        except FileNotFoundError:
+            print("  [!] yt-dlp not found — install with: pip install yt-dlp", file=sys.stderr)
+            return None  # not transient; don't retry
+        except subprocess.TimeoutExpired:
+            last_err = "timed out after 60s"
+        except Exception as e:
+            last_err = str(e)
+
+        # Decide whether another attempt is worthwhile.
+        if attempt < YT_MAX_ATTEMPTS:
+            is_429 = "429" in last_err or "Too Many Requests" in last_err
+            sleep_s = (YT_BACKOFF_429 if is_429 else YT_BACKOFF_BASE) * attempt
+            label = "rate-limited (429)" if is_429 else "error"
+            print(
+                f"  [!] yt-dlp {label}, attempt {attempt}/{YT_MAX_ATTEMPTS}; "
+                f"retrying in {sleep_s}s: {last_err[:150]}",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_s)
+
+    print(f"  [!] yt-dlp gave up after {YT_MAX_ATTEMPTS} attempts: {last_err[:200]}", file=sys.stderr)
+    return None
 
 
 # ---------------------------------------------------------------------------
