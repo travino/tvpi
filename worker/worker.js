@@ -4,30 +4,23 @@
  *
  * Routes:
  *   /playlist.m3u    → all channels combined
- *   /tvp1.m3u        → TVP 1 HD
- *   /tvp2.m3u        → TVP 2 HD
- *   /tvpinfo.m3u     → TVP Info
- *   /tvpsport.m3u    → TVP Sport
- *   /tvpkultura.m3u  → TVP Kultura
- *   /tvpdokument.m3u → TVP Dokument
- *   /tvpnauka.m3u    → TVP Nauka
- *   /tvprozrywka.m3u → TVP Rozrywka
- *   /tvphistoria.m3u → TVP Historia
+ *   /tvp1.m3u … /tvphistoria.m3u → individual TVP channels
  *   /wpolsce24.m3u   → wPolsce24 (via YouTube live)
  *   /republika.m3u   → Telewizja Republika (via YouTube live)
  *
- * Caching strategy:
- *   - scheduled() pre-fetches all stream URLs and stores them in the
- *     Cloudflare Cache API under a stable internal key (TTL = CACHE_TTL).
- *   - fetch() reads from cache first; on a miss (cold start, expired entry,
- *     or a failed cron run) it falls back to a live API call and re-caches.
+ * Resolution strategy (per channel):
+ *   L1  Cache API           — fast, but PER-COLO (cron only warms one colo)
+ *   L2  live source fetch   — TVP API / YouTube, now bounded by LIVE_TIMEOUT_MS
+ *   L3a KV (env.LKG)        — GLOBAL last-known-good, written on every success
+ *   L3b raw GitHub file     — committed playlist, refreshed ~15 min by Actions
  *
- *   CACHE_TTL MUST stay below TVP's signed-token lifetime (~15–30 min) or the
- *   worker will happily serve a token that TVP has already invalidated. 10 min
- *   leaves comfortable headroom; the cron trigger should run at a similar
- *   cadence (e.g. every 10 min in wrangler.toml) so most requests are warm:
- *       [triggers]
- *       crons = ["*\/10 * * * *"]
+ * Why L3 exists: caches.default is per-data-center. The scheduled() cron warms
+ * the cache in ONE colo, so a viewer routed through a cold colo (e.g. KUL) hits
+ * the live path — and if vod.tvp.pl is slow/blocked from that egress, the old
+ * code returned 503 after a ~24s hang. The durable fallbacks below remove that.
+ *
+ * KV is OPTIONAL: bind a KV namespace as `LKG` and it's used automatically.
+ * Without it, L3b (raw GitHub) still provides a global fallback.
  */
 
 // ---------------------------------------------------------------------------
@@ -48,10 +41,6 @@ const TVP_CHANNELS = [
   { id: "399703", slug: "tvphistoria", name: "TVP Historia", logo: TVP_LOGO, group: "Polska" },
 ];
 
-// YouTube-sourced channels.
-// `liveUrl` is the channel's persistent /live page — resolved at request time
-// to whatever broadcast is currently live, so a stream restart on YouTube's
-// side never breaks the playlist.
 const YOUTUBE_CHANNELS = [
   {
     slug:    "wpolsce24",
@@ -72,14 +61,67 @@ const YOUTUBE_CHANNELS = [
 const ALL_CHANNELS = [...TVP_CHANNELS, ...YOUTUBE_CHANNELS];
 
 // ---------------------------------------------------------------------------
-// Cache config
+// Config
 // ---------------------------------------------------------------------------
 
 const CACHE_KEY_PREFIX = "https://tvpi-cache/stream/";
-// Keep this BELOW TVP's token lifetime (~15–30 min). 600 s = 10 min gives a
-// safe margin even against the shortest tokens TVP issues. If you still see
-// occasional drops, lower it further (e.g. 300).
+// Keep BELOW TVP's token lifetime (~15–30 min). 600s = 10 min, safe margin.
 const CACHE_TTL = 600; // seconds
+
+// Bound every upstream fetch so a hung request fails over to a fallback fast
+// instead of holding the whole response open (the 24s hang seen in the logs).
+const LIVE_TIMEOUT_MS = 7000;
+
+// Raw committed playlist — kept ~fresh by GitHub Actions every 15 min, served
+// from GitHub's CDN (independent of Cloudflare egress, so it can work even when
+// vod.tvp.pl is unreachable from a given colo).
+const RAW_BASE = "https://raw.githubusercontent.com/travino/tvpi/main/streams/";
+
+// KV time-to-live for last-known-good entries. Refreshed on every successful
+// resolve, so in normal traffic this is effectively always fresh. Generous so
+// it survives a short upstream outage.
+const KV_TTL = 1800; // seconds (30 min)
+
+// Number of attempts per live source fetch before giving up to a fallback.
+// Each failed attempt emits a structured "attempt failed" log (see withRetry),
+// matching the {label, error, attempt} shape used by the deployed worker.
+const RETRY_ATTEMPTS = 2;
+
+// ---------------------------------------------------------------------------
+// Structured logging + retry
+// ---------------------------------------------------------------------------
+
+// Emit a single structured object so Cloudflare surfaces the fields directly
+// (level / msg / label / error / attempt) rather than a flat string.
+function log(level, fields) {
+  const entry = { level, ...fields };
+  if (level === "error") console.error(entry);
+  else if (level === "warn") console.warn(entry);
+  else console.log(entry);
+}
+
+// Retry a source fetch. `fn` should THROW on transport failure (e.g. the
+// AbortError raised by AbortSignal.timeout) and return null when it reached
+// the upstream but found no URL. Both cases are logged per attempt; the final
+// return is the first truthy URL, or null once attempts are exhausted.
+async function withRetry(label, fn, attempts = RETRY_ATTEMPTS) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await fn();
+      if (result) return result;
+      log("warn", { msg: "attempt failed", label, error: "empty result", attempt });
+    } catch (e) {
+      const error = e?.name ? `${e.name}: ${e.message}` : String(e);
+      log("warn", { msg: "attempt failed", label, error, attempt });
+    }
+  }
+  return null;
+}
+
+// Stable label for a channel's source, e.g. "tvp:tvp2" / "yt:republika".
+function sourceLabel(ch) {
+  return `${ch.id ? "tvp" : "yt"}:${ch.slug}`;
+}
 
 // ---------------------------------------------------------------------------
 // TVP API
@@ -96,25 +138,20 @@ const TVP_FETCH_HEADERS = {
 };
 
 async function fetchTvpStreamUrl(channelId) {
-  try {
-    const res = await fetch(TVP_API_URL.replace("{id}", channelId), {
-      headers: TVP_FETCH_HEADERS,
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.sources?.HLS?.[0]?.src ?? null;
-  } catch {
-    return null;
-  }
+  // No try/catch here: a transport error (e.g. AbortSignal.timeout firing)
+  // is allowed to throw so withRetry can log it and retry. A reachable-but-
+  // empty response returns null.
+  const res = await fetch(TVP_API_URL.replace("{id}", channelId), {
+    headers: TVP_FETCH_HEADERS,
+    signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.sources?.HLS?.[0]?.src ?? null;
 }
 
 // ---------------------------------------------------------------------------
-// YouTube — resolve a channel /live page to the current live video ID,
-// then fetch the HLS manifest via the innertube API.
-//
-// NOTE: YouTube frequently bot-walls datacenter IPs (Cloudflare Workers
-// included). This is best-effort: on failure the resolver returns null and
-// the channel falls back to its last cached/committed value.
+// YouTube
 // ---------------------------------------------------------------------------
 
 const YT_HEADERS = {
@@ -123,75 +160,57 @@ const YT_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
-// Scrape the current live video ID from a channel's /live HTML page.
 async function resolveLiveVideoId(liveUrl) {
-  try {
-    const res = await fetch(liveUrl, { headers: YT_HEADERS });
-    if (!res.ok) return null;
-    const html = await res.text();
-
-    // The live video ID appears in several places in the page markup.
-    const patterns = [
-      /"videoId":"([\w-]{11})"/,
-      /<link rel="canonical" href="https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})">/,
-      /watch\?v=([\w-]{11})/,
-    ];
-    for (const re of patterns) {
-      const m = html.match(re);
-      if (m) return m[1];
-    }
-    return null;
-  } catch {
-    return null;
+  const res = await fetch(liveUrl, {
+    headers: YT_HEADERS,
+    signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+  const patterns = [
+    /"videoId":"([\w-]{11})"/,
+    /<link rel="canonical" href="https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})">/,
+    /watch\?v=([\w-]{11})/,
+  ];
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (m) return m[1];
   }
+  return null;
 }
 
 async function fetchYouTubeStreamUrl(videoId) {
-  try {
-    const body = JSON.stringify({
-      context: {
-        client: {
-          clientName: "WEB",
-          clientVersion: "2.20240101.00.00",
-          hl: "en",
-        },
+  const body = JSON.stringify({
+    context: {
+      client: { clientName: "WEB", clientVersion: "2.20240101.00.00", hl: "en" },
+    },
+    videoId,
+  });
+  const res = await fetch(
+    "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": YT_HEADERS["User-Agent"],
+        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Version": "2.20240101.00.00",
       },
-      videoId,
-    });
-
-    const res = await fetch(
-      "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": YT_HEADERS["User-Agent"],
-          "X-YouTube-Client-Name": "1",
-          "X-YouTube-Client-Version": "2.20240101.00.00",
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) return null;
-    const data = await res.json();
-
-    // Live streams expose an HLS manifest URL in streamingData.hlsManifestUrl
-    const hlsUrl = data?.streamingData?.hlsManifestUrl;
-    if (hlsUrl) return hlsUrl;
-
-    // Fallback: look in adaptiveFormats for an m3u8 format
-    const formats = data?.streamingData?.adaptiveFormats ?? [];
-    const m3u8 = formats.find(
-      (f) => f.url && (f.mimeType?.includes("x-mpegURL") || f.url.includes(".m3u8"))
-    );
-    return m3u8?.url ?? null;
-  } catch {
-    return null;
-  }
+      body,
+      signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
+    }
+  );
+  if (!res.ok) return null;
+  const data = await res.json();
+  const hlsUrl = data?.streamingData?.hlsManifestUrl;
+  if (hlsUrl) return hlsUrl;
+  const formats = data?.streamingData?.adaptiveFormats ?? [];
+  const m3u8 = formats.find(
+    (f) => f.url && (f.mimeType?.includes("x-mpegURL") || f.url.includes(".m3u8"))
+  );
+  return m3u8?.url ?? null;
 }
 
-// Resolve a YouTube channel (/live URL) to its current HLS manifest URL.
 async function fetchYouTubeChannelStreamUrl(liveUrl) {
   const videoId = await resolveLiveVideoId(liveUrl);
   if (!videoId) return null;
@@ -199,80 +218,124 @@ async function fetchYouTubeChannelStreamUrl(liveUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// Unified stream URL resolver
+// Unified live resolver (L2)
 // ---------------------------------------------------------------------------
 
 async function fetchStreamUrlFromSource(ch) {
-  if (ch.id) {
-    // TVP channel
-    return fetchTvpStreamUrl(ch.id);
-  }
-  if (ch.liveUrl) {
-    // YouTube channel
-    return fetchYouTubeChannelStreamUrl(ch.liveUrl);
-  }
+  if (ch.id) return fetchTvpStreamUrl(ch.id);
+  if (ch.liveUrl) return fetchYouTubeChannelStreamUrl(ch.liveUrl);
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Cache helpers
+// L1 — Cache API (per-colo)
 // ---------------------------------------------------------------------------
 
 async function readFromCache(slug) {
-  const cache = caches.default;
-  const cached = await cache.match(new Request(CACHE_KEY_PREFIX + slug));
+  const cached = await caches.default.match(new Request(CACHE_KEY_PREFIX + slug));
   if (!cached) return null;
   const text = await cached.text();
   return text || null;
 }
 
 async function writeToCache(slug, url) {
-  const cache = caches.default;
   const response = new Response(url, {
     headers: {
       "Content-Type": "text/plain",
       "Cache-Control": `public, max-age=${CACHE_TTL}`,
     },
   });
-  await cache.put(new Request(CACHE_KEY_PREFIX + slug), response);
+  await caches.default.put(new Request(CACHE_KEY_PREFIX + slug), response);
 }
 
 // ---------------------------------------------------------------------------
-// Resolve a stream URL: cache → live fallback
+// L3a — KV global last-known-good (optional; only if env.LKG is bound)
 // ---------------------------------------------------------------------------
 
-async function getStreamUrl(ch) {
-  const cached = await readFromCache(ch.slug);
-  if (cached) return { url: cached, fromCache: true };
-
-  const url = await fetchStreamUrlFromSource(ch);
-  if (url) {
-    await writeToCache(ch.slug, url);
+async function readFromKV(env, slug) {
+  if (!env?.LKG) return null;
+  try {
+    return (await env.LKG.get("lkg:" + slug)) || null;
+  } catch {
+    return null;
   }
-  return { url, fromCache: false };
+}
+
+async function writeToKV(env, slug, url) {
+  if (!env?.LKG) return;
+  try {
+    await env.LKG.put("lkg:" + slug, url, { expirationTtl: KV_TTL });
+  } catch {
+    /* non-fatal */
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Pre-cache all channels (called by the cron trigger)
+// L3b — raw committed GitHub file (global, independent refresh path)
 // ---------------------------------------------------------------------------
 
-async function refreshAllStreams() {
+async function fetchRawGithubUrl(slug) {
+  try {
+    const res = await fetch(RAW_BASE + slug + ".m3u", {
+      signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    return text.split("\n").map((l) => l.trim()).find((l) => l.startsWith("http")) || null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve: L1 → L2 → L3a → L3b
+// ---------------------------------------------------------------------------
+
+async function getStreamUrl(ch, env) {
+  // L1: warm per-colo cache
+  const cached = await readFromCache(ch.slug);
+  if (cached) return { url: cached, source: "cache" };
+
+  // L2: live source (bounded per attempt, retried)
+  const live = await withRetry(sourceLabel(ch), () => fetchStreamUrlFromSource(ch));
+  if (live) {
+    await writeToCache(ch.slug, live);
+    await writeToKV(env, ch.slug, live);
+    return { url: live, source: "live" };
+  }
+
+  // L3a: global last-known-good in KV
+  const kv = await readFromKV(env, ch.slug);
+  if (kv) return { url: kv, source: "kv" };
+
+  // L3b: committed raw file (refreshed by Actions from non-CF IPs)
+  const raw = await fetchRawGithubUrl(ch.slug);
+  if (raw) return { url: raw, source: "raw" };
+
+  return { url: null, source: "none" };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-cache all channels (cron) — also seeds KV globally
+// ---------------------------------------------------------------------------
+
+async function refreshAllStreams(env) {
   const results = await Promise.all(
     ALL_CHANNELS.map(async (ch) => {
-      const url = await fetchStreamUrlFromSource(ch);
+      const label = sourceLabel(ch);
+      const url = await withRetry(label, () => fetchStreamUrlFromSource(ch));
       if (url) {
         await writeToCache(ch.slug, url);
-        console.log(`[cron] cached ${ch.slug}: ${url.slice(0, 60)}…`);
+        await writeToKV(env, ch.slug, url);
+        log("info", { msg: "cron cached", label, url: url.slice(0, 60) + "…" });
         return true;
-      } else {
-        console.warn(`[cron] failed to fetch ${ch.slug}`);
-        return false;
       }
+      log("warn", { msg: "cron fetch failed", label });
+      return false;
     })
   );
-
   const ok = results.filter(Boolean).length;
-  console.log(`[cron] refreshed ${ok}/${ALL_CHANNELS.length} streams`);
+  log("info", { msg: "cron refresh complete", ok, total: ALL_CHANNELS.length });
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +359,7 @@ function buildM3U(entries) {
 // ---------------------------------------------------------------------------
 
 export default {
-  async fetch(request) {
+  async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname.replace(/\/$/, "") || "/";
 
     let targets;
@@ -318,32 +381,38 @@ export default {
 
     const results = await Promise.all(
       targets.map(async (ch) => {
-        const { url, fromCache } = await getStreamUrl(ch);
-        return { ch, url, fromCache };
+        const { url, source } = await getStreamUrl(ch, env);
+        return { ch, url, source };
       })
     );
 
     const valid = results.filter((r) => r.url !== null);
 
     if (valid.length === 0) {
+      log("error", {
+        msg: "all sources exhausted",
+        path,
+        channels: results.map((r) => r.ch.slug).join(","),
+      });
       return new Response("Could not fetch any stream URLs.\n", { status: 503 });
     }
 
-    const hitSlugs  = valid.filter((r) =>  r.fromCache).map((r) => r.ch.slug);
-    const missSlugs = valid.filter((r) => !r.fromCache).map((r) => r.ch.slug);
+    const bySource = (s) => valid.filter((r) => r.source === s).map((r) => r.ch.slug);
 
     return new Response(buildM3U(valid), {
       headers: {
         "Content-Type": "application/x-mpegurl",
         "Cache-Control": "no-store",
         "Access-Control-Allow-Origin": "*",
-        "X-Cache-Hit":  hitSlugs.join(",")  || "none",
-        "X-Cache-Miss": missSlugs.join(",") || "none",
+        "X-Source-Cache": bySource("cache").join(",") || "none",
+        "X-Source-Live":  bySource("live").join(",")  || "none",
+        "X-Source-KV":    bySource("kv").join(",")    || "none",
+        "X-Source-Raw":   bySource("raw").join(",")   || "none",
       },
     });
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(refreshAllStreams());
+    ctx.waitUntil(refreshAllStreams(env));
   },
 };
