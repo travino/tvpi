@@ -34,10 +34,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v6.0.2
 
-      - name: Install yt-dlp
-        run: pip install -q yt-dlp
-
       - name: Set up Deno
+        # yt-dlp ≥ 2025.11.12 requires an external JS runtime for YouTube
+        # extraction. Deno is the one yt-dlp enables by default — once it's
+        # on PATH, yt-dlp picks it up automatically. Without it, YouTube
+        # extraction silently degrades and get_youtube_stream_url returns None.
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -46,9 +47,19 @@ jobs:
         run: deno --version
 
       - name: Install yt-dlp
+        # The [default] extra pulls in yt-dlp-ejs, which yt-dlp needs to drive
+        # the JS runtime. Plain `pip install yt-dlp` is NOT enough — it
+        # installs the package but leaves YouTube extraction broken.
         run: pip install -q "yt-dlp[default]"
 
       - name: Write YouTube cookies (optional)
+        # Even with Deno + yt-dlp[default], YouTube still bot-walls GitHub's
+        # datacenter IPs ("Sign in to confirm you're not a bot"). Authenticated
+        # cookies from a logged-in (ideally throwaway) account get past it.
+        # Set the YT_COOKIES repo secret to a Netscape-format cookies.txt.
+        # Secrets are not reliable in `if:` expressions, so we shell-check
+        # for the env var instead. cookies.txt is never added to the commit
+        # step below (it only `git add streams/`), so the secret stays out of git.
         env:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
