@@ -32,7 +32,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/refresh.yml/enable"
 
       - name: Checkout repo
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
 
       - name: Generate playlists
         # Pure-stdlib Python (urllib) — no extra dependencies needed.
