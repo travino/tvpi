@@ -7,11 +7,16 @@
  *   /tvp1.m3u … /tvphistoria.m3u   → individual TVP channels
  *
  * Per-channel resolution: L1 per-colo Cache → L2 live TVP API →
- * L3a KV global last-known-good → L3b raw GitHub mirror.
+ * L3a KV global last-known-good → L3b raw GitHub mirror → L3c R2 mirror.
  *
  * KV WRITE POLICY: KV is written ONLY by scheduled() (cron). The request path
  * never writes KV. Free tier = 1k writes/day; cron writes ≈ runs × channels,
  * so a ~30-min cron (48 × 8 = 384/day) stays well under the cap.
+ *
+ * R2 MIRROR (L3c): the cron also writes each channel's .m3u to the MIRROR
+ * bucket. R2 survives the repo going private (unlike L3b raw GitHub) and is an
+ * in-network read, so it sits as the final floor. It shares the cron's fate
+ * with KV, so it stays AFTER the independently-refreshed (Actions) raw mirror.
  */
 
 // ---------------------------------------------------------------------------
@@ -62,7 +67,7 @@ const KV_TTL = 900;
 /** Attempts per live source fetch before failing over. */
 const RETRY_ATTEMPTS = 2;
 
-type Source = "cache" | "live" | "kv" | "raw" | "none";
+type Source = "cache" | "live" | "kv" | "raw" | "r2" | "none";
 
 interface Resolved {
   url: string | null;
@@ -185,23 +190,60 @@ async function writeToKV(env: Env, slug: string, url: string): Promise<void> {
 // L3b — raw committed GitHub file (global, independent refresh path)
 // ---------------------------------------------------------------------------
 
+/** First http(s) URL line out of an .m3u body. */
+const firstUrl = (m3u: string): string | null =>
+  m3u.split("\n").map((l) => l.trim()).find((l) => l.startsWith("http")) ?? null;
+
 async function fetchRawGithubUrl(slug: string): Promise<string | null> {
   try {
     const res = await fetch(RAW_BASE + slug + ".m3u", {
       signal: AbortSignal.timeout(LIVE_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const text = await res.text();
-    return text.split("\n").map((l) => l.trim()).find((l) => l.startsWith("http")) ?? null;
+    return firstUrl(await res.text());
   } catch {
     return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Resolve: L1 → L2 → L3a → L3b
+// L3c — R2 mirror (global, survives the repo going private)
 //
-// The request path writes only the per-colo cache (L1). KV is the cron's job.
+// READ on the request path. WRITE only from the cron (see refreshAllStreams).
+// Keys mirror the raw layout (streams/<slug>.m3u) so the bucket doubles as a
+// public mirror if a custom domain is later attached to it.
+// ---------------------------------------------------------------------------
+
+const R2_KEY = (slug: string): string => `streams/${slug}.m3u`;
+
+async function readFromR2(env: Env, slug: string): Promise<string | null> {
+  try {
+    const obj = await env.MIRROR.get(R2_KEY(slug));
+    if (!obj) return null;
+    return firstUrl(await obj.text());
+  } catch {
+    return null;
+  }
+}
+
+async function writeToR2(env: Env, ch: Channel, url: string): Promise<void> {
+  try {
+    await env.MIRROR.put(R2_KEY(ch.slug), buildM3U([{ ch, url }]), {
+      httpMetadata: {
+        contentType: "application/x-mpegurl",
+        cacheControl: `public, max-age=${CACHE_TTL}`,
+      },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve: L1 → L2 → L3a → L3b → L3c
+//
+// The request path writes only the per-colo cache (L1). KV and R2 are the
+// cron's job.
 // ---------------------------------------------------------------------------
 
 async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promise<Resolved> {
@@ -220,11 +262,14 @@ async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promi
   const raw = await fetchRawGithubUrl(ch.slug);
   if (raw) return { url: raw, source: "raw" };
 
+  const r2 = await readFromR2(env, ch.slug);
+  if (r2) return { url: r2, source: "r2" };
+
   return { url: null, source: "none" };
 }
 
 // ---------------------------------------------------------------------------
-// Cron — the ONLY place KV is written
+// Cron — the ONLY place KV and the R2 mirror are written
 // ---------------------------------------------------------------------------
 
 async function refreshAllStreams(env: Env): Promise<void> {
@@ -235,6 +280,7 @@ async function refreshAllStreams(env: Env): Promise<void> {
       if (url) {
         await writeToCache(ch.slug, url);
         await writeToKV(env, ch.slug, url);
+        await writeToR2(env, ch, url);
         log("info", { msg: "cron cached", label, url: url.slice(0, 60) + "…" });
         return true;
       }
@@ -327,6 +373,7 @@ export default {
           "X-Source-Live": bySource("live"),
           "X-Source-KV": bySource("kv"),
           "X-Source-Raw": bySource("raw"),
+          "X-Source-R2": bySource("r2"),
         },
       });
     } catch (error) {

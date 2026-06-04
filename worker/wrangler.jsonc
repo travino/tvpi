@@ -11,6 +11,13 @@
     { "binding": "LKG", "id": "13a11c35c70e41aa9d683e9b23ed7cac" }
   ],
 
+  // L3c mirror. WRITTEN ONLY BY THE CRON (see scheduled()). Survives the repo
+  // going private, unlike the raw.githubusercontent.com fallback. R2 free tier
+  // is 1M Class-A writes/month; 48 runs/day × 8 channels ≈ 11.5k/month.
+  "r2_buckets": [
+    { "binding": "MIRROR", "bucket_name": "tvpi-mirror" }
+  ],
+
   // ~30 min keeps KV writes bounded; request-time resolution stays fresh
   // regardless, so cadence only affects fallback freshness.
   "triggers": {
