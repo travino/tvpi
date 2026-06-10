@@ -4,7 +4,11 @@
  *
  * Routes:
  *   /  | /playlist.m3u             → all channels combined
- *   /tvp1.m3u … /tvphistoria.m3u   → individual TVP channels
+ *   /tvp1.m3u … /tvphistoria.m3u   → individual TVP channels (nested playlist)
+ *   /tvp1.m3u8 … /tvphistoria.m3u8 → 302 redirect to the tokenized HLS
+ *                                    manifest. Stable, saveable URL for players
+ *                                    that won't expand nested M3Us (MPC-HC/LAV)
+ *                                    — a fresh token is resolved on every open.
  *
  * Per-channel resolution: L1 per-colo Cache → L2 live TVP API →
  * L3a KV global last-known-good → L3b raw GitHub mirror → L3c R2 mirror.
@@ -321,20 +325,49 @@ export default {
     try {
       const path = new URL(request.url).pathname.replace(/\/$/, "") || "/";
 
+      const notFound = (): Response =>
+        new Response(
+          "Not found.\n\nAvailable:\n" +
+            [
+              "/playlist.m3u",
+              ...CHANNELS.map((c) => `/${c.slug}.m3u`),
+              ...CHANNELS.map((c) => `/${c.slug}.m3u8  (302 → HLS manifest)`),
+            ].join("\n") +
+            "\n",
+          { status: 404, headers: { "Content-Type": "text/plain" } },
+        );
+
+      // /<slug>.m3u8 → 302 to the freshly resolved tokenized HLS manifest.
+      // Gives players a stable URL that behaves like the manifest itself.
+      if (path.endsWith(".m3u8")) {
+        const ch = CHANNEL_BY_SLUG.get(path.slice(1, -".m3u8".length));
+        if (!ch) return notFound();
+        const { url, source } = await getStreamUrl(ch, env, ctx);
+        if (!url) {
+          log("error", { msg: "all sources exhausted", path, channels: ch.slug });
+          return new Response("Could not fetch the stream URL.\n", {
+            status: 503,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: url,
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+            "X-Source": source,
+          },
+        });
+      }
+
       let targets: readonly Channel[];
       if (path === "/" || path === "/playlist.m3u") {
         targets = CHANNELS;
       } else {
         const slug = path.replace(/^\//, "").replace(/\.m3u$/, "");
         const ch = CHANNEL_BY_SLUG.get(slug);
-        if (!ch) {
-          return new Response(
-            "Not found.\n\nAvailable:\n" +
-              ["/playlist.m3u", ...CHANNELS.map((c) => `/${c.slug}.m3u`)].join("\n") +
-              "\n",
-            { status: 404, headers: { "Content-Type": "text/plain" } },
-          );
-        }
+        if (!ch) return notFound();
         targets = [ch];
       }
 
