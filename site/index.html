@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVPI — Telegazeta · Polish public TV over IP</title>
+<meta name="description" content="Polish public TV (TVP) as always-fresh IPTV M3U playlists — resolved request-time by a Cloudflare Worker so the signed token is never stale.">
+<meta property="og:title" content="TVPI · TVP ╳ IPTV">
+<meta property="og:description" content="Polish public TV as always-fresh M3U playlists.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tvpi.pages.dev/">
+<link rel="canonical" href="https://tvpi.pages.dev/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23000'/><rect x='2' y='4' width='4' height='6' fill='%23f5e94e'/><rect x='7' y='4' width='4' height='6' fill='%2346e0e0'/><rect x='12' y='4' width='4' height='6' fill='%2354e06a'/><text x='3' y='28' font-family='monospace' font-size='15' font-weight='700' fill='%2346e0e0'>TV</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --k:#04060a; --scr:#070a10;
+    --w:#e6e8ea; --dim:#6f7886; --faint:#3a4150;
+    --y:#f5e94e; --c:#46e0e0; --g:#54e06a; --m:#e85ad0; --r:#ff5147; --b:#6f8cff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:#000; color:var(--w);
+    font-family:"VT323",monospace; line-height:1.18;
+    min-height:100vh; padding:18px; display:flex; justify-content:center;
+    -webkit-font-smoothing:none;
+  }
+  /* ---------- CRT screen shell ---------- */
+  .crt{
+    position:relative; width:100%; max-width:860px; background:var(--scr);
+    border-radius:22px/30px; padding:clamp(20px,4vw,42px) clamp(16px,4vw,46px) clamp(26px,4vw,40px);
+    box-shadow:
+      inset 0 0 140px rgba(0,0,0,.9),
+      inset 0 0 26px rgba(70,224,224,.05),
+      0 0 0 2px #0c1018, 0 0 0 12px #05070b, 0 26px 80px -20px #000,
+      0 0 120px -40px rgba(70,224,224,.25);
+    overflow:hidden;
+  }
+  /* scanlines + vignette + flicker */
+  .crt::before{
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:5;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.22) 2px 4px);
+    mix-blend-mode:multiply;
+  }
+  .crt::after{
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:6;
+    background:radial-gradient(120% 120% at 50% 50%, transparent 58%, rgba(0,0,0,.55) 100%);
+    animation:flick 5s infinite steps(60);
+  }
+  @keyframes flick{0%,97%{opacity:1}98%{opacity:.94}99%{opacity:.99}}
+  .scr-in{position:relative; z-index:4}
+  *{text-shadow:0 0 3px}                  /* phosphor glow, in each element's own colour */
+  h1,h2,.big{text-shadow:0 0 10px}
+
+  /* ---------- teletext bits ---------- */
+  .testbars{display:flex; height:14px; margin-bottom:14px; border:1px solid #0d1117}
+  .testbars i{flex:1}
+  .testbars i:nth-child(1){background:var(--w)}.testbars i:nth-child(2){background:var(--y)}
+  .testbars i:nth-child(3){background:var(--c)}.testbars i:nth-child(4){background:var(--g)}
+  .testbars i:nth-child(5){background:var(--m)}.testbars i:nth-child(6){background:var(--r)}
+  .testbars i:nth-child(7){background:var(--b)}
+
+  .topbar{display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    font-size:20px; color:var(--dim); letter-spacing:.04em}
+  .topbar .pg{color:var(--k); background:var(--c); padding:1px 8px; font-weight:700;
+    font-family:"Silkscreen"; font-size:13px; text-shadow:none}
+  .topbar .clk{color:var(--g)}
+
+  .masthead{margin:18px 0 6px; display:flex; align-items:flex-end; gap:18px; flex-wrap:wrap}
+  h1{font-family:"Silkscreen",monospace; font-weight:700; color:var(--y);
+    font-size:clamp(38px,11vw,74px); line-height:.9; letter-spacing:.02em}
+  .sub{font-size:clamp(20px,3.4vw,28px); color:var(--c); letter-spacing:.06em; padding-bottom:6px}
+  .sub b{color:var(--m); font-style:normal}
+  .live{display:inline-flex; align-items:center; gap:8px; font-size:22px; color:var(--g);
+    letter-spacing:.08em; margin-top:6px}
+  .live::before{content:"\25CF"; color:var(--r); animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .tagline{font-size:23px; color:var(--w); margin:14px 0 4px; max-width:60ch}
+  .tagline b{color:var(--y); font-weight:400}
+
+  /* section heading: colour block + label */
+  .sec{margin-top:34px}
+  .sech{font-size:24px; letter-spacing:.06em; display:flex; align-items:center; gap:10px; margin-bottom:8px}
+  .sech .blk{font-family:"Silkscreen"; font-size:12px; padding:3px 8px; color:var(--k); text-shadow:none}
+  .y .blk{background:var(--y)} .c .blk{background:var(--c)} .g .blk{background:var(--g)}
+  .y .sech{color:var(--y)} .c .sech{color:var(--c)} .g .sech{color:var(--g)}
+  .sech .en{color:var(--dim); font-size:19px}
+
+  /* ---------- channel rows ---------- */
+  .rows{border-top:1px solid var(--faint)}
+  .row{display:flex; align-items:flex-end; gap:8px; padding:7px 4px 5px; cursor:pointer;
+    border-bottom:1px solid #0e131c; font-size:24px; transition:background .1s}
+  .row:hover,.row:focus-visible{background:rgba(70,224,224,.07); outline:none}
+  .row .no{color:var(--c); font-weight:700; width:2.6ch; flex:none}
+  .row .nm{color:var(--w); white-space:nowrap}
+  .row .lead{flex:1; border-bottom:2px dotted var(--faint); margin:0 .4ch 7px; min-width:14px}
+  .row .st{flex:none; font-size:20px; letter-spacing:.06em; width:8.5ch; text-align:right}
+  .row .st.chk{color:var(--dim)}
+  .row .st.on{color:var(--g)} .row .st.on::after{content:" \25CF"; animation:blink 1.1s steps(1) infinite}
+  .row .st.off{color:var(--r)}
+  .row .cp{flex:none; color:var(--faint); font-size:18px; width:9ch; text-align:right; letter-spacing:.04em}
+  .row:hover .cp{color:var(--y)}
+  .row.copied .cp{color:var(--k); background:var(--y); text-shadow:none}
+
+  /* ---------- playlist box ---------- */
+  .feedbox{border:2px solid var(--c); padding:12px 14px; display:flex; align-items:center; gap:12px;
+    flex-wrap:wrap; background:rgba(70,224,224,.04)}
+  .feedbox .u{flex:1; min-width:220px; font-size:23px; color:var(--w); word-break:break-all}
+  .feedbox .u .ar{color:var(--g)}
+  .keybtn{font-family:"Silkscreen"; font-size:13px; text-shadow:none; border:0; cursor:pointer;
+    padding:11px 16px; letter-spacing:.02em; color:var(--k)}
+  .keybtn.red{background:var(--r)} .keybtn:hover{filter:brightness(1.15)}
+  .keybtn.copied{background:var(--w)}
+
+  /* ---------- how ---------- */
+  .how{font-size:23px; color:var(--w)}
+  .how p{padding:4px 0; border-bottom:1px solid #0e131c; display:flex; gap:12px}
+  .how p .n{color:var(--m); flex:none}
+  .how p .t b{color:var(--c); font-weight:400}
+
+  .players{font-size:22px; color:var(--dim); margin-top:10px}
+  .players b{color:var(--w); font-weight:400}
+
+  /* ---------- fastext bar ---------- */
+  .fastext{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:34px}
+  .ft{font-family:"Silkscreen"; font-size:12px; text-shadow:none; color:var(--w);
+    border-top:6px solid; padding:11px 8px 9px; text-align:center; cursor:pointer;
+    background:#0b0f16; letter-spacing:.02em; transition:background .12s; text-decoration:none; display:block}
+  .ft:hover{background:#121826}
+  .ft small{display:block; color:var(--dim); font-family:"VT323"; font-size:15px; letter-spacing:0; margin-top:3px}
+  .ft.red{border-color:var(--r)} .ft.green{border-color:var(--g)}
+  .ft.yellow{border-color:var(--y)} .ft.cyan{border-color:var(--c)}
+  .ft.copied{background:var(--g)} .ft.copied,.ft.copied small{color:var(--k); text-shadow:none}
+
+  footer{margin-top:26px; padding-top:12px; border-top:1px solid var(--faint);
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px;
+    font-size:19px; color:var(--dim); letter-spacing:.05em}
+  footer .pg{color:var(--y)} footer a{color:var(--c); text-decoration:none}
+  footer a:hover{text-decoration:underline}
+
+  @media (max-width:560px){
+    body{padding:8px}
+    .row{font-size:21px} .row .nm{white-space:normal}
+    .row .cp{display:none}                 /* tap row to copy on mobile */
+    .row .st{width:auto}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<div class="crt"><div class="scr-in">
+
+  <div class="testbars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+  <div class="topbar">
+    <span>TELEGAZETA <span class="pg">P101</span></span>
+    <span class="clk" id="clk">--:--:--</span>
+  </div>
+
+  <div class="masthead">
+    <h1>TVPI</h1>
+    <div>
+      <div class="sub">TVP <b>&#10005;</b> IPTV</div>
+      <div class="live">NADAJE NA &#379;YWO &middot; LIVE</div>
+    </div>
+  </div>
+  <p class="tagline">Polish public television as ready-to-use <b>IPTV M3U</b> playlists. A Cloudflare
+    Worker resolves each stream the moment your player asks, so the signed token is never stale.</p>
+
+  <div class="sec c">
+    <div class="sech"><span class="blk">KANA&#321;Y</span> CHANNELS <span class="en" id="chCount">101&ndash;108</span></div>
+    <div class="rows" id="rows"></div>
+  </div>
+
+  <div class="sec c">
+    <div class="sech"><span class="blk">M3U</span> FULL PLAYLIST</div>
+    <div class="feedbox">
+      <span class="u" id="mainUrl"><span class="ar">&gt;&nbsp;</span>https://tvpi.travny.workers.dev/playlist.m3u</span>
+      <button class="keybtn red" data-copy="https://tvpi.travny.workers.dev/playlist.m3u">COPY M3U</button>
+    </div>
+  </div>
+
+  <div class="sec g">
+    <div class="sech"><span class="blk">INFO</span> HOW IT STAYS FRESH</div>
+    <div class="how">
+      <p><span class="n">1.</span><span class="t">Your player opens a channel &mdash; <b>no stale snapshot</b> in between.</span></p>
+      <p><span class="n">2.</span><span class="t">The Worker pulls a <b>fresh signed HLS URL</b> from TVP, cached only briefly.</span></p>
+      <p><span class="n">3.</span><span class="t">Cache &rarr; live &rarr; KV &rarr; GitHub &rarr; R2. A TVP hiccup <b>doesn't take a channel dark</b>.</span></p>
+    </div>
+    <p class="players">PLAYERS &mdash; <b>VLC</b> &middot; <b>MPC-HC</b> &middot; <b>Kodi</b> (PVR IPTV Simple) &middot; <b>TiviMate</b> &middot; <b>Televizo</b> &middot; <b>GSE</b></p>
+  </div>
+
+  <div class="fastext">
+    <button class="ft red" data-copy="https://tvpi.travny.workers.dev/playlist.m3u">COPY M3U<small>full playlist</small></button>
+    <a class="ft green" href="https://tvpi.travny.workers.dev/playlist.m3u">OPEN<small>raw feed</small></a>
+    <a class="ft yellow" href="#rows">CHANNELS<small>pick one</small></a>
+    <a class="ft cyan" href="https://github.com/travino/tvpi">GITHUB<small>source</small></a>
+  </div>
+
+  <footer>
+    <span>TVPI &middot; TELEGAZETA <span class="pg">P101/108</span></span>
+    <span><a href="https://tvpi.travny.workers.dev/playlist.m3u">tvpi.travny.workers.dev</a></span>
+  </footer>
+
+</div></div>
+
+<script>
+const WORKER = "https://tvpi.travny.workers.dev";
+const CHANNELS = [
+  {no:"101", slug:"tvp1",        name:"TVP 1 HD"},
+  {no:"102", slug:"tvp2",        name:"TVP 2 HD"},
+  {no:"103", slug:"tvpinfo",     name:"TVP Info"},
+  {no:"104", slug:"tvpsport",    name:"TVP Sport"},
+  {no:"105", slug:"tvpdokument", name:"TVP Dokument"},
+  {no:"106", slug:"tvpnauka",    name:"TVP Nauka"},
+  {no:"107", slug:"tvprozrywka", name:"TVP Rozrywka"},
+  {no:"108", slug:"tvphistoria", name:"TVP Historia"},
+];
+const m3u  = s => `${WORKER}/${s}.m3u`;   // nested playlist — used for status checks (CORS-safe 200)
+const m3u8 = s => `${WORKER}/${s}.m3u8`;  // 302 → tokenized HLS manifest — what players should get
+
+// ---- live clock (teletext header) ----
+const pad = n => String(n).padStart(2,"0");
+function tick(){
+  const d = new Date();
+  document.getElementById("clk").textContent =
+    `${pad(d.getDate())}.${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+tick(); setInterval(tick, 1000);
+
+// ---- render channel rows ----
+document.getElementById("rows").innerHTML = CHANNELS.map(c=>`
+  <div class="row" role="button" tabindex="0" data-copy="${m3u8(c.slug)}" data-slug="${c.slug}">
+    <span class="no">${c.no}</span>
+    <span class="nm">${c.name}</span>
+    <span class="lead"></span>
+    <span class="st chk" id="st-${c.slug}">CHECK&hellip;</span>
+    <span class="cp">&#10515; COPY</span>
+  </div>`).join("");
+
+// ---- copy (delegated; rows + key buttons) ----
+async function copy(text){
+  try{ await navigator.clipboard.writeText(text); }
+  catch{ const t=document.createElement("textarea"); t.value=text; document.body.appendChild(t);
+         t.select(); document.execCommand("copy"); t.remove(); }
+}
+function flash(el, cls){ el.classList.add(cls); setTimeout(()=>el.classList.remove(cls), 1300); }
+document.addEventListener("click", e=>{
+  const el = e.target.closest("[data-copy]"); if(!el) return;
+  if(el.tagName==="A") return;                 // links act as links
+  e.preventDefault(); copy(el.dataset.copy);
+  if(el.classList.contains("row")){ const cp=el.querySelector(".cp"); const o=cp.innerHTML;
+    cp.innerHTML="SKOPIOWANO"; flash(el,"copied"); setTimeout(()=>cp.innerHTML=o,1300); }
+  else { const o=el.textContent; el.textContent="COPIED"; flash(el,"copied"); setTimeout(()=>el.textContent=o,1300); }
+});
+document.addEventListener("keydown", e=>{
+  if((e.key==="Enter"||e.key===" ") && e.target.classList.contains("row")){ e.preventDefault(); e.target.click(); }
+});
+
+// ---- live status (Worker sends Access-Control-Allow-Origin: *) ----
+// NOTE: checks hit the .m3u endpoint, NOT .m3u8 — a browser fetch of the .m3u8
+// would follow the 302 into TVP's CORS wall and report a false BRAK.
+function check(url, ms=8000){
+  const ac=new AbortController(); const t=setTimeout(()=>ac.abort(), ms);
+  return fetch(url,{method:"GET",cache:"no-store",signal:ac.signal})
+    .then(r=>r.ok).catch(()=>false).finally(()=>clearTimeout(t));
+}
+(async()=>{
+  const res = await Promise.all(CHANNELS.map(async c=>{
+    const ok = await check(m3u(c.slug));
+    const el = document.getElementById("st-"+c.slug);
+    el.className = "st " + (ok?"on":"off");
+    el.textContent = ok ? "NADAJE" : "BRAK";
+    return ok;
+  }));
+  const up = res.filter(Boolean).length;
+  document.getElementById("chCount").innerHTML = `${up}/${CHANNELS.length} ON AIR`;
+})();
+</script>
+</body>
+</html>
