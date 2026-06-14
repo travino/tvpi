@@ -1,24 +1,13 @@
 version: 2
 updates:
-
+  # Only real moving surface in this repo: the action versions in the workflows.
+  # (No package.json, no .gitmodules, no Python manifest — generate.py is pure
+  # stdlib and the worker installs wrangler ad-hoc — so npm/pip/gitsubmodule
+  # entries pointed at nothing and were removed.)
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-      
-  - package-ecosystem: "gitsubmodule"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "npm"
-    # Look for `package.json` and `lock` files in the `root` directory
-    directory: "/"
-    # Check the npm registry for updates every day (weekdays)
-    schedule:
-      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
