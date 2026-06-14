@@ -21,12 +21,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
 
-      - run: npm install -D wrangler@latest @cloudflare/workers-types typescript
+      - run: npm ci
         working-directory: worker
 
       - name: Type check
-        run: npx wrangler types && npx tsc --noEmit
+        run: npm run typecheck
         working-directory: worker
 
       - name: Deploy
