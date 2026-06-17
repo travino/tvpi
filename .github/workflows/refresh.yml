@@ -15,6 +15,10 @@ permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: refresh-tvp
+  cancel-in-progress: true
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
