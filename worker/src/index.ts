@@ -13,6 +13,12 @@
  * Per-channel resolution: L1 per-colo Cache → L2 live TVP API →
  * L3a KV global last-known-good → L3b raw GitHub mirror → L3c R2 mirror.
  *
+ * STALE-WHILE-REVALIDATE (L1): a cache hit older than CACHE_SOFT_TTL is still
+ * served instantly, and a fresh token is fetched in the background via
+ * ctx.waitUntil (cache-only write — never KV). So on a warm colo a viewer never
+ * waits on the TVP API, and the served token is at most ~CACHE_SOFT_TTL old. A
+ * cold colo (no cache) still blocks on live, since there is nothing fresher.
+ *
  * KV WRITE POLICY: KV is written ONLY by scheduled() (cron). The request path
  * never writes KV. Free tier = 1k writes/day; cron writes ≈ runs × channels,
  * so a ~30-min cron (48 × 8 = 384/day) stays well under the cap.
@@ -57,6 +63,12 @@ const CHANNEL_BY_SLUG = new Map(CHANNELS.map((c) => [c.slug, c]));
 const CACHE_KEY_PREFIX = "https://tvpi-cache/stream/";
 /** Keep BELOW TVP's token lifetime (~15–30 min). 600s = 10 min, safe margin. */
 const CACHE_TTL = 600;
+/**
+ * Soft freshness window. A cache hit younger than this is served as-is; an older
+ * (but not yet expired) hit is still served, plus a background revalidate swaps
+ * in a fresh token. Must be < CACHE_TTL so the window exists.
+ */
+const CACHE_SOFT_TTL = 300;
 /** Bound every upstream fetch so a hung request fails over fast. */
 const LIVE_TIMEOUT_MS = 7_000;
 /** Raw committed playlist, kept ~fresh by GitHub Actions; served from GitHub's CDN. */
@@ -76,6 +88,8 @@ type Source = "cache" | "live" | "kv" | "raw" | "r2" | "none";
 interface Resolved {
   url: string | null;
   source: Source;
+  /** True when a stale cache hit was served and a background refresh was kicked. */
+  revalidating?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,11 +164,23 @@ async function fetchTvpStreamUrl(channelId: string): Promise<string | null> {
 // L1 — Cache API (per-colo)
 // ---------------------------------------------------------------------------
 
-async function readFromCache(slug: string): Promise<string | null> {
+interface CacheHit {
+  url: string;
+  /** Seconds since the entry was written. Infinity when the stamp is missing. */
+  ageSec: number;
+}
+
+async function readFromCache(slug: string): Promise<CacheHit | null> {
   const cached = await caches.default.match(new Request(CACHE_KEY_PREFIX + slug));
   if (!cached) return null;
-  const text = await cached.text();
-  return text || null;
+  const url = (await cached.text()).trim();
+  if (!url) return null;
+  const stamp = Number(cached.headers.get("X-Cached-At"));
+  const ageSec =
+    Number.isFinite(stamp) && stamp > 0
+      ? Math.max(0, (Date.now() - stamp) / 1000)
+      : Infinity; // unknown age (pre-SWR entry) → treat as stale, revalidate once
+  return { url, ageSec };
 }
 
 async function writeToCache(slug: string, url: string): Promise<void> {
@@ -162,9 +188,16 @@ async function writeToCache(slug: string, url: string): Promise<void> {
     headers: {
       "Content-Type": "text/plain",
       "Cache-Control": `public, max-age=${CACHE_TTL}`,
+      "X-Cached-At": Date.now().toString(),
     },
   });
   await caches.default.put(new Request(CACHE_KEY_PREFIX + slug), response);
+}
+
+/** Background-only: fetch a fresh token and refresh the cache. Never writes KV. */
+async function revalidateCache(ch: Channel): Promise<void> {
+  const live = await withRetry(sourceLabel(ch), () => fetchTvpStreamUrl(ch.id));
+  if (live) await writeToCache(ch.slug, live);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +284,14 @@ async function writeToR2(env: Env, ch: Channel, url: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promise<Resolved> {
-  const cached = await readFromCache(ch.slug);
-  if (cached) return { url: cached, source: "cache" };
+  const hit = await readFromCache(ch.slug);
+  if (hit) {
+    if (hit.ageSec >= CACHE_SOFT_TTL) {
+      ctx.waitUntil(revalidateCache(ch)); // cache-only refresh — no KV write
+      return { url: hit.url, source: "cache", revalidating: true };
+    }
+    return { url: hit.url, source: "cache" };
+  }
 
   const live = await withRetry(sourceLabel(ch), () => fetchTvpStreamUrl(ch.id));
   if (live) {
@@ -342,7 +381,7 @@ export default {
       if (path.endsWith(".m3u8")) {
         const ch = CHANNEL_BY_SLUG.get(path.slice(1, -".m3u8".length));
         if (!ch) return notFound();
-        const { url, source } = await getStreamUrl(ch, env, ctx);
+        const { url, source, revalidating } = await getStreamUrl(ch, env, ctx);
         if (!url) {
           log("error", { msg: "all sources exhausted", path, channels: ch.slug });
           return new Response("Could not fetch the stream URL.\n", {
@@ -357,6 +396,7 @@ export default {
             "Cache-Control": "no-store",
             "Access-Control-Allow-Origin": "*",
             "X-Source": source,
+            "X-Revalidating": revalidating ? ch.slug : "none",
           },
         });
       }
@@ -373,13 +413,14 @@ export default {
 
       const results = await Promise.all(
         targets.map(async (ch) => {
-          const { url, source } = await getStreamUrl(ch, env, ctx);
-          return { ch, url, source };
+          const { url, source, revalidating } = await getStreamUrl(ch, env, ctx);
+          return { ch, url, source, revalidating: revalidating ?? false };
         }),
       );
 
       const valid: Entry[] = results.filter(
-        (r): r is { ch: Channel; url: string; source: Source } => r.url !== null,
+        (r): r is { ch: Channel; url: string; source: Source; revalidating: boolean } =>
+          r.url !== null,
       );
 
       if (valid.length === 0) {
@@ -397,6 +438,9 @@ export default {
       const bySource = (s: Source): string =>
         results.filter((r) => r.source === s).map((r) => r.ch.slug).join(",") || "none";
 
+      const revalidating =
+        results.filter((r) => r.revalidating).map((r) => r.ch.slug).join(",") || "none";
+
       return new Response(buildM3U(valid), {
         headers: {
           "Content-Type": "application/x-mpegurl",
@@ -407,6 +451,7 @@ export default {
           "X-Source-KV": bySource("kv"),
           "X-Source-Raw": bySource("raw"),
           "X-Source-R2": bySource("r2"),
+          "X-Revalidating": revalidating,
         },
       });
     } catch (error) {
