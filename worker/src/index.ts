@@ -80,6 +80,15 @@ const RAW_BASE = "https://raw.githubusercontent.com/travino/tvpi/main/streams/";
  * likely-expired TVP token out of KV.
  */
 const KV_TTL = 900;
+/**
+ * Cron KV-write gate. The TVP URL rotates (CDN host + signature) on every
+ * fetch, so a content diff would never match and could never skip a write.
+ * Instead, skip the KV write when the stored entry is still young. At the
+ * current ~30-min Worker cron this is a no-op (the 900s KV entry has already
+ * expired by the next run, so the gate always opens), but it caps KV writes to
+ * ~once per channel per window if the cron is ever shortened below KV_TTL.
+ */
+const KV_REFRESH_AFTER = 600;
 /** Attempts per live source fetch before failing over. */
 const RETRY_ATTEMPTS = 2;
 
@@ -217,9 +226,24 @@ async function readFromKV(env: Env, slug: string): Promise<string | null> {
 
 async function writeToKV(env: Env, slug: string, url: string): Promise<void> {
   try {
-    await env.LKG.put("lkg:" + slug, url, { expirationTtl: KV_TTL });
+    await env.LKG.put("lkg:" + slug, url, {
+      expirationTtl: KV_TTL,
+      metadata: { ts: Date.now() },
+    });
   } catch {
     /* non-fatal */
+  }
+}
+
+/** Age (seconds) of the stored LKG entry; Infinity when missing or unstamped. */
+async function kvAgeSec(env: Env, slug: string): Promise<number> {
+  try {
+    const { value, metadata } = await env.LKG.getWithMetadata<{ ts?: number }>("lkg:" + slug);
+    if (!value) return Infinity;
+    const ts = metadata?.ts;
+    return typeof ts === "number" ? Math.max(0, (Date.now() - ts) / 1000) : Infinity;
+  } catch {
+    return Infinity;
   }
 }
 
@@ -322,7 +346,9 @@ async function refreshAllStreams(env: Env): Promise<void> {
       const url = await withRetry(label, () => fetchTvpStreamUrl(ch.id));
       if (url) {
         await writeToCache(ch.slug, url);
-        await writeToKV(env, ch.slug, url);
+        if ((await kvAgeSec(env, ch.slug)) >= KV_REFRESH_AFTER) {
+          await writeToKV(env, ch.slug, url);
+        }
         await writeToR2(env, ch, url);
         log("info", { msg: "cron cached", label, url: url.slice(0, 60) + "…" });
         return true;
