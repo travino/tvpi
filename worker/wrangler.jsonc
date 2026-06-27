@@ -5,23 +5,34 @@
   "compatibility_date": "2026-06-03",
   "workers_dev": true,
 
-  // Global last-known-good store. WRITTEN ONLY BY THE CRON (see scheduled()).
-  // 384 writes/day at the 30-min cadence below — well under the 1k/day cap.
-  "kv_namespaces": [
-    { "binding": "LKG", "id": "13a11c35c70e41aa9d683e9b23ed7cac" }
+  // Global last-known-good store (L3a). WRITTEN ONLY BY THE CRON (see
+  // scheduled()). Replaces the former KV namespace: D1's free tier is ~100k
+  // row-writes/day vs KV's ~1k, so the cron can refresh the LKG every run
+  // (576/day at */20) and the row stays a trusted, genuinely-fresh fallback.
+  // Read-path freshness is enforced in code (LKG_MAX_AGE_MS), since D1 has no
+  // native TTL. DB created + migration 0001 applied to the remote already.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tvpi-lkg",
+      "database_id": "2bb79e21-9133-4889-8761-1eedd561cee3",
+      "migrations_dir": "migrations"
+    }
   ],
 
   // L3c mirror. WRITTEN ONLY BY THE CRON (see scheduled()). Survives the repo
   // going private, unlike the raw.githubusercontent.com fallback. R2 free tier
-  // is 1M Class-A writes/month; 48 runs/day × 8 channels ≈ 11.5k/month.
+  // is 1M Class-A writes/month; 72 runs/day × 8 channels ≈ 17.3k/month.
   "r2_buckets": [
     { "binding": "MIRROR", "bucket_name": "tvpi-mirror" }
   ],
 
-  // ~30 min keeps KV writes bounded; request-time resolution stays fresh
-  // regardless, so cadence only affects fallback freshness.
+  // */20 = every 20 min. The D1 free tier lets the cron run this often (576
+  // row-writes/day) where the old KV cap (1k/day) held it to */30. Fresher cron
+  // ⇒ fresher last-known-good token (TVP tokens die in ~15–30 min). Distinct
+  // from the */15 GitHub Actions mirror cron in refresh.yml.
   "triggers": {
-    "crons": ["*/30 * * * *"]
+    "crons": ["*/20 * * * *"]
   },
 
   "observability": {

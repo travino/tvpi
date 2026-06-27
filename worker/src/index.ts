@@ -1,6 +1,6 @@
 /**
  * TVP Live Stream Worker (TypeScript)
- * Cloudflare Workers — free tier (100k req/day, 1k KV writes/day).
+ * Cloudflare Workers — free tier (100k req/day; L3a now on D1: 100k row-writes/day).
  *
  * Routes:
  *   /  | /playlist.m3u             → all channels combined
@@ -11,22 +11,30 @@
  *                                    — a fresh token is resolved on every open.
  *
  * Per-channel resolution: L1 per-colo Cache → L2 live TVP API →
- * L3a KV global last-known-good → L3b raw GitHub mirror → L3c R2 mirror.
+ * L3a D1 global last-known-good → L3b raw GitHub mirror → L3c R2 mirror.
  *
  * STALE-WHILE-REVALIDATE (L1): a cache hit older than CACHE_SOFT_TTL is still
  * served instantly, and a fresh token is fetched in the background via
- * ctx.waitUntil (cache-only write — never KV). So on a warm colo a viewer never
- * waits on the TVP API, and the served token is at most ~CACHE_SOFT_TTL old. A
- * cold colo (no cache) still blocks on live, since there is nothing fresher.
+ * ctx.waitUntil (cache-only write — never the LKG store). So on a warm colo a
+ * viewer never waits on the TVP API, and the served token is at most
+ * ~CACHE_SOFT_TTL old. A cold colo (no cache) still blocks on live, since there
+ * is nothing fresher.
  *
- * KV WRITE POLICY: KV is written ONLY by scheduled() (cron). The request path
- * never writes KV. Free tier = 1k writes/day; cron writes ≈ runs × channels,
- * so a ~30-min cron (48 × 8 = 384/day) stays well under the cap.
+ * LKG WRITE POLICY: the D1 last-known-good (L3a) is written ONLY by scheduled()
+ * (cron). The request path never writes it — it only reads (a single-row PK
+ * lookup, cheap against D1's 5M row-reads/day free tier). The cron UPSERTs every
+ * channel each run: at the */20 cadence that is 72 × 8 = 576 row-writes/day,
+ * ~0.6% of the 100k/day free cap. (This replaced a KV-backed L3a whose ~1k
+ * writes/day cap forced KV_TTL below the cron interval, so the entry expired
+ * between runs and the layer was nearly always skipped. D1 lets the cron keep
+ * the LKG genuinely fresh, so it serves as a TRUSTED fallback ahead of the raw
+ * mirror — whose freshness rides the less-reliable GitHub Actions cron.)
  *
  * R2 MIRROR (L3c): the cron also writes each channel's .m3u to the MIRROR
  * bucket. R2 survives the repo going private (unlike L3b raw GitHub) and is an
  * in-network read, so it sits as the final floor. It shares the cron's fate
- * with KV, so it stays AFTER the independently-refreshed (Actions) raw mirror.
+ * with the D1 LKG, so it stays AFTER the independently-refreshed (Actions) raw
+ * mirror.
  */
 
 // ---------------------------------------------------------------------------
@@ -74,25 +82,19 @@ const LIVE_TIMEOUT_MS = 7_000;
 /** Raw committed playlist, kept ~fresh by GitHub Actions; served from GitHub's CDN. */
 const RAW_BASE = "https://raw.githubusercontent.com/travino/tvpi/main/streams/";
 /**
- * KV TTL for last-known-good. Kept SHORTER than the 30-min cron (900s = 15 min)
- * so a stale entry expires and resolution falls through to the raw GitHub
- * mirror (refreshed ~every 15 min by refresh.yml) instead of serving a
- * likely-expired TVP token out of KV.
+ * Freshness window for the D1 last-known-good. D1 has no native TTL, so the READ
+ * path enforces it: an LKG row older than this is ignored and resolution falls
+ * through to the raw mirror — the same "never serve a clearly-dead token" guard
+ * the old KV_TTL gave for free. Sized ABOVE the Worker cron interval (*/20 = 20
+ * min) so a normally-refreshed row is always valid and actually gets used, and
+ * below TVP's ~15–30 min token-lifetime ceiling. If the Worker cron stalls, the
+ * row ages out and the raw mirror takes over.
  */
-const KV_TTL = 900;
-/**
- * Cron KV-write gate. The TVP URL rotates (CDN host + signature) on every
- * fetch, so a content diff would never match and could never skip a write.
- * Instead, skip the KV write when the stored entry is still young. At the
- * current ~30-min Worker cron this is a no-op (the 900s KV entry has already
- * expired by the next run, so the gate always opens), but it caps KV writes to
- * ~once per channel per window if the cron is ever shortened below KV_TTL.
- */
-const KV_REFRESH_AFTER = 600;
+const LKG_MAX_AGE_MS = 25 * 60_000; // 25 min
 /** Attempts per live source fetch before failing over. */
 const RETRY_ATTEMPTS = 2;
 
-type Source = "cache" | "live" | "kv" | "raw" | "r2" | "none";
+type Source = "cache" | "live" | "d1" | "raw" | "r2" | "none";
 
 interface Resolved {
   url: string | null;
@@ -203,47 +205,46 @@ async function writeToCache(slug: string, url: string): Promise<void> {
   await caches.default.put(new Request(CACHE_KEY_PREFIX + slug), response);
 }
 
-/** Background-only: fetch a fresh token and refresh the cache. Never writes KV. */
+/** Background-only: fetch a fresh token and refresh the cache. Never writes the LKG. */
 async function revalidateCache(ch: Channel): Promise<void> {
   const live = await withRetry(sourceLabel(ch), () => fetchTvpStreamUrl(ch.id));
   if (live) await writeToCache(ch.slug, live);
 }
 
 // ---------------------------------------------------------------------------
-// L3a — KV global last-known-good
+// L3a — D1 global last-known-good
 //
-// READ on the request path (cheap: 100k reads/day free).
-// WRITE only from the cron (see refreshAllStreams).
+// READ on the request path (cheap: a single-row PK lookup, <5M row-reads/day
+// free). WRITE only from the cron (see refreshAllStreams). Schema lives in
+// migrations/0001_create_lkg.sql:
+//   CREATE TABLE lkg (slug TEXT PRIMARY KEY, url TEXT NOT NULL, ts INTEGER);
 // ---------------------------------------------------------------------------
 
-async function readFromKV(env: Env, slug: string): Promise<string | null> {
+async function readFromD1(env: Env, slug: string): Promise<string | null> {
   try {
-    return (await env.LKG.get("lkg:" + slug)) || null;
+    const row = await env.DB
+      .prepare("SELECT url, ts FROM lkg WHERE slug = ?")
+      .bind(slug)
+      .first<{ url: string; ts: number }>();
+    if (!row) return null;
+    if (Date.now() - row.ts > LKG_MAX_AGE_MS) return null; // stale → fall through to raw
+    return row.url || null;
   } catch {
     return null;
   }
 }
 
-async function writeToKV(env: Env, slug: string, url: string): Promise<void> {
+async function writeToD1(env: Env, slug: string, url: string): Promise<void> {
   try {
-    await env.LKG.put("lkg:" + slug, url, {
-      expirationTtl: KV_TTL,
-      metadata: { ts: Date.now() },
-    });
+    await env.DB
+      .prepare(
+        "INSERT INTO lkg (slug, url, ts) VALUES (?, ?, ?) "
+        + "ON CONFLICT(slug) DO UPDATE SET url = excluded.url, ts = excluded.ts",
+      )
+      .bind(slug, url, Date.now())
+      .run();
   } catch {
     /* non-fatal */
-  }
-}
-
-/** Age (seconds) of the stored LKG entry; Infinity when missing or unstamped. */
-async function kvAgeSec(env: Env, slug: string): Promise<number> {
-  try {
-    const { value, metadata } = await env.LKG.getWithMetadata<{ ts?: number }>("lkg:" + slug);
-    if (!value) return Infinity;
-    const ts = metadata?.ts;
-    return typeof ts === "number" ? Math.max(0, (Date.now() - ts) / 1000) : Infinity;
-  } catch {
-    return Infinity;
   }
 }
 
@@ -303,15 +304,15 @@ async function writeToR2(env: Env, ch: Channel, url: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Resolve: L1 → L2 → L3a → L3b → L3c
 //
-// The request path writes only the per-colo cache (L1). KV and R2 are the
-// cron's job.
+// The request path writes only the per-colo cache (L1). The D1 LKG and R2 are
+// the cron's job.
 // ---------------------------------------------------------------------------
 
 async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promise<Resolved> {
   const hit = await readFromCache(ch.slug);
   if (hit) {
     if (hit.ageSec >= CACHE_SOFT_TTL) {
-      ctx.waitUntil(revalidateCache(ch)); // cache-only refresh — no KV write
+      ctx.waitUntil(revalidateCache(ch)); // cache-only refresh — no LKG write
       return { url: hit.url, source: "cache", revalidating: true };
     }
     return { url: hit.url, source: "cache" };
@@ -319,12 +320,12 @@ async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promi
 
   const live = await withRetry(sourceLabel(ch), () => fetchTvpStreamUrl(ch.id));
   if (live) {
-    ctx.waitUntil(writeToCache(ch.slug, live)); // cache only — no KV write here
+    ctx.waitUntil(writeToCache(ch.slug, live)); // cache only — no LKG write here
     return { url: live, source: "live" };
   }
 
-  const kv = await readFromKV(env, ch.slug);
-  if (kv) return { url: kv, source: "kv" };
+  const lkg = await readFromD1(env, ch.slug);
+  if (lkg) return { url: lkg, source: "d1" };
 
   const raw = await fetchRawGithubUrl(ch.slug);
   if (raw) return { url: raw, source: "raw" };
@@ -336,7 +337,7 @@ async function getStreamUrl(ch: Channel, env: Env, ctx: ExecutionContext): Promi
 }
 
 // ---------------------------------------------------------------------------
-// Cron — the ONLY place KV and the R2 mirror are written
+// Cron — the ONLY place the D1 LKG and the R2 mirror are written
 // ---------------------------------------------------------------------------
 
 async function refreshAllStreams(env: Env): Promise<void> {
@@ -346,9 +347,7 @@ async function refreshAllStreams(env: Env): Promise<void> {
       const url = await withRetry(label, () => fetchTvpStreamUrl(ch.id));
       if (url) {
         await writeToCache(ch.slug, url);
-        if ((await kvAgeSec(env, ch.slug)) >= KV_REFRESH_AFTER) {
-          await writeToKV(env, ch.slug, url);
-        }
+        await writeToD1(env, ch.slug, url);
         await writeToR2(env, ch, url);
         log("info", { msg: "cron cached", label, url: url.slice(0, 60) + "…" });
         return true;
@@ -474,7 +473,7 @@ export default {
           "Access-Control-Allow-Origin": "*",
           "X-Source-Cache": bySource("cache"),
           "X-Source-Live": bySource("live"),
-          "X-Source-KV": bySource("kv"),
+          "X-Source-D1": bySource("d1"),
           "X-Source-Raw": bySource("raw"),
           "X-Source-R2": bySource("r2"),
           "X-Revalidating": revalidating,
