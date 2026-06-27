@@ -85,12 +85,13 @@ const RAW_BASE = "https://raw.githubusercontent.com/travino/tvpi/main/streams/";
  * Freshness window for the D1 last-known-good. D1 has no native TTL, so the READ
  * path enforces it: an LKG row older than this is ignored and resolution falls
  * through to the raw mirror — the same "never serve a clearly-dead token" guard
- * the old KV_TTL gave for free. Sized ABOVE the Worker cron interval (every 20
- * min) so a normally-refreshed row is always valid and actually gets used, and
- * below TVP's ~15–30 min token-lifetime ceiling. If the Worker cron stalls, the
- * row ages out and the raw mirror takes over.
+ * the old KV_TTL gave for free. Capped at 15 min to stay under TVP's ~15-30 min
+ * token-lifetime floor, so a served fallback token is never older than that.
+ * Note this is BELOW the 20-minute cron interval, so for the last few minutes
+ * of each interval the row reads stale and resolution falls through to the raw
+ * mirror; an intentional bias toward fresher-or-nothing.
  */
-const LKG_MAX_AGE_MS = 25 * 60_000; // 25 min
+const LKG_MAX_AGE_MS = 15 * 60_000; // 15 min
 /** Attempts per live source fetch before failing over. */
 const RETRY_ATTEMPTS = 2;
 
