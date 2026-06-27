@@ -23,7 +23,7 @@
  * LKG WRITE POLICY: the D1 last-known-good (L3a) is written ONLY by scheduled()
  * (cron). The request path never writes it — it only reads (a single-row PK
  * lookup, cheap against D1's 5M row-reads/day free tier). The cron UPSERTs every
- * channel each run: at the */20 cadence that is 72 × 8 = 576 row-writes/day,
+ * channel each run: at the 20-minute cadence that is 72 × 8 = 576 row-writes/day,
  * ~0.6% of the 100k/day free cap. (This replaced a KV-backed L3a whose ~1k
  * writes/day cap forced KV_TTL below the cron interval, so the entry expired
  * between runs and the layer was nearly always skipped. D1 lets the cron keep
@@ -85,7 +85,7 @@ const RAW_BASE = "https://raw.githubusercontent.com/travino/tvpi/main/streams/";
  * Freshness window for the D1 last-known-good. D1 has no native TTL, so the READ
  * path enforces it: an LKG row older than this is ignored and resolution falls
  * through to the raw mirror — the same "never serve a clearly-dead token" guard
- * the old KV_TTL gave for free. Sized ABOVE the Worker cron interval (*/20 = 20
+ * the old KV_TTL gave for free. Sized ABOVE the Worker cron interval (every 20
  * min) so a normally-refreshed row is always valid and actually gets used, and
  * below TVP's ~15–30 min token-lifetime ceiling. If the Worker cron stalls, the
  * row ages out and the raw mirror takes over.
