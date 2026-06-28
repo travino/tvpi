@@ -8,8 +8,8 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Worker build toolchain (wrangler, typescript). Pinned via worker/package.json
-  # + lockfile so `npm ci` is reproducible; Dependabot bumps the lockfile here.
+  # Worker build toolchain, exact-pinned in worker/package.json (wrangler,
+  # typescript). Dependabot bumps those pins via grouped weekly PRs.
   - package-ecosystem: "npm"
     directory: "/worker"
     schedule:
