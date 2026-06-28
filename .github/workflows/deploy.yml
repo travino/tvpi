@@ -11,24 +11,18 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-worker
-  cancel-in-progress: false
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6.0.2
 
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
 
-      - run: npm ci
+      - run: npm install
         working-directory: worker
 
       - name: Type check
